@@ -19,6 +19,7 @@
 
 <p align="center">
   <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-2f8ef7">
+  <img alt="Apple Silicon arm64" src="https://img.shields.io/badge/Apple%20Silicon-arm64-111827">
   <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-334155">
   <img alt="CoreAudio" src="https://img.shields.io/badge/Audio-CoreAudio-0f766e">
   <img alt="VBAN" src="https://img.shields.io/badge/Protocol-VBAN-f97316">
@@ -29,6 +30,7 @@
 ## 主要功能
 
 - 原生 AppKit 界面，支持中文和英文切换。
+- 当前版本是 Apple Silicon `arm64` / `aarch64` 架构构建。
 - 通过 UDP 接收 VBAN AUDIO 数据包。
 - 将 PCM 音频播放到 macOS 默认输出设备。
 - 可按流名和发送端主机过滤。
@@ -40,6 +42,7 @@
 要求：
 
 - macOS 13 或更高版本。
+- Apple Silicon Mac，例如 M1/M2/M3/M4。当前 release 不是 Universal binary，不包含 Intel `x86_64` 架构。
 - Xcode Command Line Tools。
 
 在仓库根目录构建并打开 app：
@@ -93,8 +96,8 @@ make build
 
 ## 打包说明
 
-`make app` 会在 `dist/` 下生成本地 app bundle，并用 ad-hoc 签名用于本机测试。若要公开分发 `.app`，仍需要 Developer ID 签名和 notarization。
+`make app` 会在 `dist/` 下生成 Apple Silicon `arm64` app bundle，并用 ad-hoc 签名用于本机测试。若要公开分发 `.app`，仍需要 Developer ID 签名和 notarization。
 
 ## 工具链说明
 
-本项目使用 Objective-C/AppKit。原因是当前这台 Mac 的 Command Line Tools 存在 SwiftPM/SDK 版本不匹配问题；项目用 `clang` 构建，不依赖完整 Xcode。
+本项目使用 Objective-C/AppKit。原因是当前这台 Mac 的 Command Line Tools 存在 SwiftPM/SDK 版本不匹配问题；项目用 `clang` 构建，不依赖完整 Xcode。当前 release 二进制是非 Universal 的 `arm64` Mach-O，只面向 Apple Silicon。

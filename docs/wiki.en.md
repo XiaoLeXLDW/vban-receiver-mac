@@ -14,6 +14,22 @@ VBAN Receiver listens on a UDP port, parses VBAN AUDIO packets from VoiceMeeter,
 
 The receiver uses an IPv6 UDP socket with `IPV6_V6ONLY` disabled, so the same listener can receive IPv6 and IPv4-mapped traffic. The `Source` filter matches the sender host exactly and does not include the sender port.
 
+## Architecture
+
+The current release is Apple Silicon only:
+
+- Binary architecture: `arm64` / `aarch64`.
+- macOS binary type: non-fat Mach-O executable.
+- Supported Macs: Apple Silicon Macs such as M1/M2/M3/M4.
+- Not included: Intel `x86_64` slice.
+- Not a Universal binary.
+
+You can verify a local build with:
+
+```bash
+lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
+```
+
 ## Main Window Overview
 
 The window is fixed at `600 x 400` and is not resizable. It is split into these areas:
@@ -335,4 +351,4 @@ Try:
 
 ## Distribution
 
-`make app` creates an app bundle with ad-hoc signing for local testing. Public distribution to other Macs should use Developer ID signing and notarization.
+`make app` creates an Apple Silicon `arm64` app bundle with ad-hoc signing for local testing. Public distribution to other Macs should use Developer ID signing and notarization.

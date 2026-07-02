@@ -17,6 +17,7 @@
 
 <p align="center">
   <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-2f8ef7">
+  <img alt="Apple Silicon arm64" src="https://img.shields.io/badge/Apple%20Silicon-arm64-111827">
   <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-334155">
   <img alt="CoreAudio" src="https://img.shields.io/badge/Audio-CoreAudio-0f766e">
   <img alt="VBAN" src="https://img.shields.io/badge/Protocol-VBAN-f97316">
@@ -27,6 +28,7 @@
 ## Highlights
 
 - Native AppKit interface with Chinese and English UI.
+- Apple Silicon build for `arm64` / `aarch64` Macs.
 - Receives VBAN AUDIO packets over UDP.
 - Plays PCM streams through the default macOS output device.
 - Optional filtering by stream name and sender host.
@@ -38,6 +40,7 @@
 Requirements:
 
 - macOS 13 or later.
+- Apple Silicon Mac, such as M1/M2/M3/M4. The current release is not a Universal binary and does not include an Intel `x86_64` slice.
 - Xcode Command Line Tools.
 
 Build and open the app from the repository root:
@@ -91,8 +94,8 @@ The latency menu changes the playback buffering policy:
 
 ## Packaging Note
 
-`make app` creates a local app bundle in `dist/` and signs it ad hoc for local testing. Public distribution still needs Developer ID signing and notarization.
+`make app` creates a local Apple Silicon `arm64` app bundle in `dist/` and signs it ad hoc for local testing. Public distribution still needs Developer ID signing and notarization.
 
 ## Toolchain Note
 
-This project is Objective-C/AppKit because the current Command Line Tools install on this Mac has a mismatched SwiftPM/SDK setup. It builds with `clang` and does not require full Xcode.
+This project is Objective-C/AppKit because the current Command Line Tools install on this Mac has a mismatched SwiftPM/SDK setup. It builds with `clang` and does not require full Xcode. The current release build is a non-fat `arm64` Mach-O binary for Apple Silicon.
