@@ -25,6 +25,10 @@
 
 ![VBAN Receiver main window](docs/assets/vban-receiver-app-en.png)
 
+## Receiving State
+
+![VBAN Receiver receiving audio](docs/assets/vban-receiver-receiving-en.png)
+
 ## Highlights
 
 - Native AppKit interface with Chinese and English UI.

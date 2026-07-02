@@ -669,46 +669,80 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 }
 @end
 
-@interface CompactInputField : NSControl {
-    NSString *_fieldStringValue;
+@interface CompactInputFieldCell : NSTextFieldCell
+@end
+
+@implementation CompactInputFieldCell
+- (NSRect)centeredTextRectForBounds:(NSRect)rect {
+    NSFont *font = self.font ?: SystemFont(13.5, NSFontWeightSemibold);
+    CGFloat textHeight = ceil(font.ascender - font.descender);
+    CGFloat y = floor(rect.origin.y + (rect.size.height - textHeight) * 0.5) - 1;
+    return NSMakeRect(rect.origin.x + DashboardFieldTextInsetX,
+                      y,
+                      MAX(1, rect.size.width - DashboardFieldTextInsetX * 2),
+                      textHeight + 2);
 }
+- (NSRect)drawingRectForBounds:(NSRect)rect {
+    return [self centeredTextRectForBounds:rect];
+}
+- (void)editWithFrame:(NSRect)rect
+               inView:(NSView *)controlView
+               editor:(NSText *)textObj
+             delegate:(id)delegate
+                event:(NSEvent *)event {
+    [super editWithFrame:[self centeredTextRectForBounds:rect]
+                  inView:controlView
+                  editor:textObj
+                delegate:delegate
+                   event:event];
+}
+- (void)selectWithFrame:(NSRect)rect
+                 inView:(NSView *)controlView
+                 editor:(NSText *)textObj
+               delegate:(id)delegate
+                  start:(NSInteger)selectionStart
+                 length:(NSInteger)selectionLength {
+    [super selectWithFrame:[self centeredTextRectForBounds:rect]
+                    inView:controlView
+                    editor:textObj
+                  delegate:delegate
+                     start:selectionStart
+                    length:selectionLength];
+}
+@end
+
+@interface CompactInputField : NSTextField
 @property (nonatomic, copy) NSString *placeholder;
-@property (nonatomic, assign, getter=isEditable) BOOL editable;
-@property (nonatomic, assign) NSUInteger insertionIndex;
-@property (nonatomic, assign) BOOL selectedAll;
+@property (nonatomic, assign) BOOL hovered;
 @end
 
 @implementation CompactInputField
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
-        _fieldStringValue = @"";
         _placeholder = @"";
-        _editable = YES;
-        _insertionIndex = 0;
+        self.cell = [[CompactInputFieldCell alloc] initTextCell:@""];
+        self.bezeled = NO;
+        self.bordered = NO;
+        self.drawsBackground = NO;
+        self.focusRingType = NSFocusRingTypeNone;
+        self.editable = YES;
+        self.selectable = YES;
         self.enabled = YES;
-        [self setAccessibilityRole:NSAccessibilityTextFieldRole];
+        self.usesSingleLineMode = YES;
+        self.lineBreakMode = NSLineBreakByClipping;
+        self.allowsExpansionToolTips = YES;
+        self.font = SystemFont(13.5, NSFontWeightSemibold);
+        self.textColor = PrimaryTextColor();
+        self.maximumNumberOfLines = 1;
+        [[self cell] setScrollable:YES];
+        [[self cell] setWraps:NO];
     }
     return self;
 }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)mouseDownCanMoveWindow { return NO; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
-- (BOOL)acceptsFirstResponder { return self.enabled && self.editable; }
-- (BOOL)isAccessibilityElement { return YES; }
-- (NSString *)accessibilityRole { return NSAccessibilityTextFieldRole; }
-- (NSString *)accessibilityValue { return self.stringValue; }
-- (NSRect)accessibilityFrame {
-    return [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
-}
-- (BOOL)accessibilityFocused { return self.isFocused; }
-- (void)setAccessibilityFocused:(BOOL)focused {
-    if (focused) {
-        [self.window makeFirstResponder:self];
-    } else if (self.isFocused) {
-        [self.window makeFirstResponder:nil];
-    }
-}
 - (BOOL)accessibilityPerformPress {
     if (!self.enabled || !self.editable) {
         return NO;
@@ -716,210 +750,102 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     [self.window makeFirstResponder:self];
     return YES;
 }
-- (BOOL)becomeFirstResponder {
-    self.selectedAll = NO;
-    self.insertionIndex = self.stringValue.length;
-    self.needsDisplay = YES;
-    return YES;
-}
-- (BOOL)resignFirstResponder {
-    self.selectedAll = NO;
-    self.needsDisplay = YES;
-    return YES;
-}
 - (BOOL)isFocused {
-    return self.window.firstResponder == self;
+    return self.currentEditor != nil || self.window.firstResponder == self;
+}
+- (void)mouseDown:(NSEvent *)event {
+    if (self.enabled && self.editable) {
+        [self.window makeFirstResponder:self];
+    }
+    [super mouseDown:event];
 }
 - (void)setStringValue:(NSString *)stringValue {
-    _fieldStringValue = [stringValue copy] ?: @"";
-    self.insertionIndex = MIN(self.insertionIndex, _fieldStringValue.length);
-    [self setAccessibilityValue:_fieldStringValue];
+    [super setStringValue:stringValue ?: @""];
+    [self updateFittedFont];
     self.needsDisplay = YES;
-}
-- (NSString *)stringValue {
-    return _fieldStringValue ?: @"";
 }
 - (void)setPlaceholder:(NSString *)placeholder {
     _placeholder = [placeholder copy] ?: @"";
+    NSDictionary *attrs = @{
+        NSFontAttributeName: self.font ?: SystemFont(13.5, NSFontWeightSemibold),
+        NSForegroundColorAttributeName: MutedTextColor()
+    };
+    self.placeholderAttributedString = [[NSAttributedString alloc] initWithString:_placeholder attributes:attrs];
+    [self updateFittedFont];
     self.needsDisplay = YES;
 }
 - (void)setEditable:(BOOL)editable {
-    _editable = editable;
-    if (!editable && self.isFocused) {
+    [super setEditable:editable];
+    self.selectable = editable;
+    if (!editable && self.currentEditor) {
         [self.window makeFirstResponder:nil];
     }
     self.needsDisplay = YES;
 }
-- (void)mouseDown:(NSEvent *)event {
-    if (!self.enabled || !self.editable) {
-        return;
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
     }
-    [self.window makeFirstResponder:self];
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    self.hovered = YES;
+    self.needsDisplay = YES;
+}
+- (void)mouseExited:(NSEvent *)event {
+    self.hovered = NO;
+    self.needsDisplay = YES;
+}
+- (void)textDidBeginEditing:(NSNotification *)notification {
+    [super textDidBeginEditing:notification];
+    self.needsDisplay = YES;
+}
+- (void)textDidChange:(NSNotification *)notification {
+    [super textDidChange:notification];
+    [self updateFittedFont];
+    [self sendAction:self.action to:self.target];
+    self.needsDisplay = YES;
+}
+- (void)textDidEndEditing:(NSNotification *)notification {
+    [super textDidEndEditing:notification];
+    [self updateFittedFont];
+    self.needsDisplay = YES;
+}
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    self.needsDisplay = YES;
+}
+- (void)updateFittedFont {
+    NSString *text = self.stringValue.length ? self.stringValue : self.placeholder;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : 132;
+    self.font = FittedSystemFont(text ?: @"", width - DashboardFieldTextInsetX * 2, 13.5, 11.0, NSFontWeightSemibold);
+    self.textColor = PrimaryTextColor();
+    if (self.placeholder.length) {
+        self.placeholderAttributedString = [[NSAttributedString alloc] initWithString:self.placeholder
+                                                                           attributes:@{
+            NSFontAttributeName: self.font ?: SystemFont(13.5, NSFontWeightSemibold),
+            NSForegroundColorAttributeName: MutedTextColor()
+        }];
+    }
+}
+- (void)setFrame:(NSRect)frameRect {
+    [super setFrame:frameRect];
+    [self updateFittedFont];
 }
 - (void)drawRect:(NSRect)dirtyRect {
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect
                                                          xRadius:DashboardFieldCornerRadius
                                                          yRadius:DashboardFieldCornerRadius];
-    [GlassFieldFill(0.08) setFill];
+    CGFloat fillAlpha = self.isFocused ? 0.14 : (self.hovered ? 0.105 : 0.08);
+    [GlassFieldFill(fillAlpha) setFill];
     [path fill];
-    [(self.isFocused ? AccentColorAlpha(0.72) : HexColorAlpha(0xFFFFFF, 0.13)) setStroke];
-    path.lineWidth = self.isFocused ? 1.5 : 1.0;
+    [(self.isFocused ? AccentColorAlpha(0.78) : HexColorAlpha(0xFFFFFF, self.hovered ? 0.18 : 0.13)) setStroke];
+    path.lineWidth = self.isFocused ? 1.6 : 1.0;
     [path stroke];
-
-    NSString *text = self.stringValue.length ? self.stringValue : self.placeholder;
-    BOOL placeholder = self.stringValue.length == 0;
-    NSFont *font = FittedSystemFont(text, self.bounds.size.width - DashboardFieldTextInsetX * 2, 13.5, 11.5, NSFontWeightSemibold);
-    NSDictionary *attrs = @{
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: placeholder ? MutedTextColor() : PrimaryTextColor()
-    };
-    CGFloat textHeight = ceil(font.ascender - font.descender);
-    NSRect textRect = NSMakeRect(DashboardFieldTextInsetX,
-                                 floor((self.bounds.size.height - textHeight) * 0.5) - 1,
-                                 MAX(1, self.bounds.size.width - DashboardFieldTextInsetX * 2),
-                                 textHeight + 2);
-    [text drawInRect:textRect withAttributes:attrs];
-
-    if (self.isFocused && self.editable) {
-        NSString *caretPrefix = [self.stringValue substringToIndex:MIN(self.insertionIndex, self.stringValue.length)];
-        CGFloat caretX = textRect.origin.x + [caretPrefix sizeWithAttributes:attrs].width + 1;
-        caretX = MIN(NSMaxX(textRect), MAX(textRect.origin.x, caretX));
-        [AccentColor() setStroke];
-        NSBezierPath *caret = [NSBezierPath bezierPath];
-        [caret moveToPoint:NSMakePoint(caretX, 7)];
-        [caret lineToPoint:NSMakePoint(caretX, self.bounds.size.height - 7)];
-        caret.lineWidth = 1.2;
-        [caret stroke];
-    }
-}
-- (void)insertTextString:(NSString *)text {
-    if (!text.length || !self.editable) {
-        return;
-    }
-    NSMutableString *value = [self.stringValue mutableCopy];
-    if (self.selectedAll) {
-        [value setString:@""];
-        self.insertionIndex = 0;
-        self.selectedAll = NO;
-    }
-    NSUInteger index = MIN(self.insertionIndex, value.length);
-    [value insertString:text atIndex:index];
-    self.insertionIndex = index + text.length;
-    self.stringValue = value;
-    [self sendAction:self.action to:self.target];
-}
-- (void)deleteBackward:(id)sender {
-    if (!self.editable) {
-        return;
-    }
-    if (self.selectedAll) {
-        self.stringValue = @"";
-        self.insertionIndex = 0;
-        self.selectedAll = NO;
-        [self sendAction:self.action to:self.target];
-        return;
-    }
-    if (self.insertionIndex == 0 || self.stringValue.length == 0) {
-        return;
-    }
-    NSMutableString *value = [self.stringValue mutableCopy];
-    NSUInteger index = MIN(self.insertionIndex, value.length);
-    [value deleteCharactersInRange:NSMakeRange(index - 1, 1)];
-    self.insertionIndex = index - 1;
-    self.stringValue = value;
-    [self sendAction:self.action to:self.target];
-}
-- (void)moveLeft:(id)sender {
-    if (self.insertionIndex > 0) {
-        self.insertionIndex -= 1;
-        self.selectedAll = NO;
-        self.needsDisplay = YES;
-    }
-}
-- (void)moveRight:(id)sender {
-    if (self.insertionIndex < self.stringValue.length) {
-        self.insertionIndex += 1;
-        self.selectedAll = NO;
-        self.needsDisplay = YES;
-    }
-}
-- (void)selectAll:(id)sender {
-    self.selectedAll = YES;
-    self.insertionIndex = self.stringValue.length;
-    self.needsDisplay = YES;
-}
-- (void)copy:(id)sender {
-    NSString *text = self.selectedAll ? self.stringValue : @"";
-    if (!text.length) {
-        return;
-    }
-    NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
-    [pasteboard clearContents];
-    [pasteboard setString:text forType:NSPasteboardTypeString];
-}
-- (void)cut:(id)sender {
-    if (!self.selectedAll || !self.editable) {
-        return;
-    }
-    [self copy:sender];
-    self.stringValue = @"";
-    self.insertionIndex = 0;
-    self.selectedAll = NO;
-    [self sendAction:self.action to:self.target];
-}
-- (void)paste:(id)sender {
-    NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
-    if (text.length) {
-        [self insertTextString:[text stringByReplacingOccurrencesOfString:@"\n" withString:@""]];
-    }
-}
-- (void)keyDown:(NSEvent *)event {
-    NSEventModifierFlags modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    NSString *characters = event.charactersIgnoringModifiers ?: @"";
-    if ((modifiers & NSEventModifierFlagCommand) && characters.length) {
-        unichar key = [characters.lowercaseString characterAtIndex:0];
-        if (key == 'a') { [self selectAll:nil]; return; }
-        if (key == 'c') { [self copy:nil]; return; }
-        if (key == 'x') { [self cut:nil]; return; }
-        if (key == 'v') { [self paste:nil]; return; }
-    }
-    if (characters.length) {
-        unichar key = [characters characterAtIndex:0];
-        if (key == NSDeleteCharacter || key == NSBackspaceCharacter) {
-            [self deleteBackward:nil];
-            return;
-        }
-        if (key == NSLeftArrowFunctionKey) {
-            [self moveLeft:nil];
-            return;
-        }
-        if (key == NSRightArrowFunctionKey) {
-            [self moveRight:nil];
-            return;
-        }
-        if (key == NSTabCharacter) {
-            [self.window selectNextKeyView:self];
-            return;
-        }
-        if (key == NSCarriageReturnCharacter || key == NSEnterCharacter) {
-            [self.window makeFirstResponder:nil];
-            return;
-        }
-    }
-    NSString *text = event.characters ?: @"";
-    if (text.length) {
-        NSMutableString *filtered = [NSMutableString string];
-        for (NSUInteger i = 0; i < text.length; i++) {
-            unichar c = [text characterAtIndex:i];
-            if (![[NSCharacterSet controlCharacterSet] characterIsMember:c]) {
-                [filtered appendFormat:@"%C", c];
-            }
-        }
-        [self insertTextString:filtered];
-        return;
-    }
-    [super keyDown:event];
+    [super drawRect:dirtyRect];
 }
 @end
 
@@ -1011,6 +937,19 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityRole { return NSAccessibilityPopUpButtonRole; }
+- (NSString *)accessibilityLabel { return self.toolTip ?: @"Latency"; }
+- (NSString *)accessibilityValue { return self.selectedTitle ?: @""; }
+- (NSRect)accessibilityFrame {
+    return [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
+}
+- (BOOL)accessibilityPerformPress {
+    [self showMenu];
+    return YES;
+}
 - (NSInteger)indexOfSelectedItem { return self.selectedIndex; }
 - (NSInteger)numberOfItems { return (NSInteger)self.items.count; }
 - (void)addItemsWithTitles:(NSArray<NSString *> *)titles {
@@ -1032,6 +971,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
         self.selectedIndex = MAX(0, MIN(index, (NSInteger)self.items.count - 1));
     }
     self.needsDisplay = YES;
+    NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
 }
 - (NSString *)selectedTitle {
     if (self.selectedIndex < 0 || self.selectedIndex >= (NSInteger)self.items.count) {
@@ -1051,18 +991,24 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     [path stroke];
 
     NSString *title = self.selectedTitle ?: @"";
-    CGFloat titleLeftPadding = 10;
-    CGFloat chevronSpace = 23;
+    CGFloat titleLeftPadding = 8;
+    CGFloat chevronSpace = 18;
     CGFloat titleWidth = MAX(1, self.bounds.size.width - titleLeftPadding - chevronSpace);
+    NSFont *titleFont = FittedSystemFont(title, titleWidth, 13, 10.5, NSFontWeightSemibold);
     NSDictionary *attrs = @{
-        NSFontAttributeName: FittedSystemFont(title, titleWidth, 13, 11.5, NSFontWeightSemibold),
+        NSFontAttributeName: titleFont,
         NSForegroundColorAttributeName: PrimaryTextColor()
     };
-    [title drawInRect:NSMakeRect(titleLeftPadding, floor((self.bounds.size.height - 17) * 0.5), titleWidth, 17) withAttributes:attrs];
+    CGFloat textHeight = ceil(titleFont.ascender - titleFont.descender);
+    NSRect titleRect = NSMakeRect(titleLeftPadding,
+                                  floor((self.bounds.size.height - textHeight) * 0.5) - 1,
+                                  titleWidth,
+                                  textHeight + 2);
+    [title drawInRect:titleRect withAttributes:attrs];
 
     [SecondaryTextColor() setStroke];
     NSBezierPath *chevron = [NSBezierPath bezierPath];
-    CGFloat x = self.bounds.size.width - 17;
+    CGFloat x = self.bounds.size.width - 15;
     CGFloat y = floor(self.bounds.size.height * 0.5) - 2;
     [chevron moveToPoint:NSMakePoint(x, y)];
     [chevron lineToPoint:NSMakePoint(x + 4, y + 4)];
@@ -1246,8 +1192,45 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 
 @implementation SparkleRepairButton
 - (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (void)performClick:(id)sender {
+    if (!self.enabled) {
+        return;
+    }
+    [self sendAction:self.action to:self.target];
+}
+- (BOOL)accessibilityPerformPress {
+    if (!self.enabled) {
+        return NO;
+    }
+    [self performClick:self];
+    return YES;
+}
+- (void)mouseDown:(NSEvent *)event {
+    if (!self.enabled) {
+        return;
+    }
+
+    self.highlighted = YES;
+    self.needsDisplay = YES;
+    BOOL shouldFire = NO;
+    while (YES) {
+        NSEvent *nextEvent = [self.window nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
+        if (!nextEvent || nextEvent.type == NSEventTypeLeftMouseUp) {
+            NSPoint point = [self convertPoint:(nextEvent ? nextEvent.locationInWindow : event.locationInWindow) fromView:nil];
+            shouldFire = NSPointInRect(point, self.bounds);
+            break;
+        }
+    }
+    self.highlighted = NO;
+    self.needsDisplay = YES;
+    if (shouldFire) {
+        [self sendAction:self.action to:self.target];
+    }
+}
 - (void)drawRect:(NSRect)dirtyRect {
-    BOOL highlighted = [self.cell isHighlighted];
+    BOOL highlighted = self.highlighted || [self.cell isHighlighted];
     CGFloat fillAlpha = self.enabled ? (highlighted ? 0.24 : 0.14) : 0.10;
     CGFloat borderAlpha = self.enabled ? (highlighted ? 0.24 : 0.16) : 0.10;
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
@@ -1607,7 +1590,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.waveIcon.frame = NSMakeRect(audioControlX, 119, 24, 24);
     self.latencyLabel.frame = NSMakeRect(inset, 166, audioLabelWidth, 22);
     ApplyLanguageAwareLabel(self.latencyLabel, self.language, 16, 16, 11.5, self.latencyLabel.bounds.size.width, NSFontWeightSemibold);
-    CGFloat latencyPopupWidth = self.language == DashboardLanguageEnglish ? 88 : 76;
+    CGFloat latencyPopupWidth = self.language == DashboardLanguageEnglish ? 96 : 76;
     self.latencyPopup.frame = NSMakeRect(audioControlX, 164, latencyPopupWidth, DashboardDropdownHeight);
     self.outputResetLabel.frame = NSMakeRect(audioWidth - inset - 58, 170, 58, 18);
     ApplyLanguageAwareLabel(self.outputResetLabel, self.language, 13, 13, 10, self.outputResetLabel.bounds.size.width, NSFontWeightSemibold);
@@ -1693,6 +1676,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 
     self.optionsTitle.stringValue = Localized(self.language, @"选项", @"OPTIONS");
     self.latencyLabel.stringValue = Localized(self.language, @"延迟", @"Latency");
+    self.latencyPopup.toolTip = self.latencyLabel.stringValue;
     NSInteger selectedIndex = self.latencyPopup.indexOfSelectedItem;
     [self.latencyPopup removeAllItems];
     [self.latencyPopup addItemsWithTitles:@[

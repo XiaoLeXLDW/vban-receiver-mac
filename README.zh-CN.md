@@ -27,6 +27,10 @@
 
 ![VBAN Receiver 主界面](docs/assets/vban-receiver-app.png)
 
+## 接收中状态
+
+![VBAN Receiver 接收中](docs/assets/vban-receiver-receiving-zh.png)
+
 ## 主要功能
 
 - 原生 AppKit 界面，支持中文和英文切换。
