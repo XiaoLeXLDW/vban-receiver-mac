@@ -1,5 +1,9 @@
 # VBAN Receiver Wiki
 
+<p align="center">
+  <a href="wiki.en.md">English Wiki</a>
+</p>
+
 这份 Wiki 详细说明 VBAN Receiver 的每个区域、按钮、字段、状态和常见排障路径。
 
 ![VBAN Receiver 使用说明](assets/vban-receiver-usage-guide.png)

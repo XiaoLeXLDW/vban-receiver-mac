@@ -12,7 +12,7 @@
 <p align="center">
   <a href="README.zh-CN.md">中文说明</a>
   ·
-  <a href="docs/wiki.md">Detailed Wiki</a>
+  <a href="docs/wiki.en.md">Detailed Wiki</a>
 </p>
 
 <p align="center">

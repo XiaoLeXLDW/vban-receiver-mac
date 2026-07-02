@@ -13,6 +13,8 @@
   <a href="README.md">English README</a>
   ·
   <a href="docs/wiki.md">详细 Wiki</a>
+  ·
+  <a href="docs/wiki.en.md">English Wiki</a>
 </p>
 
 <p align="center">
