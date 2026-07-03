@@ -6,8 +6,13 @@ APP_NAME="VBAN Receiver"
 BINARY_NAME="VBANReceiver"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 BUILD_BIN="$ROOT/.build/$BINARY_NAME"
+VERSION="${VERSION:-0.3.12}"
+BUILD_NUMBER="${BUILD_NUMBER:-16}"
+ARCH="${ARCH:-arm64}"
 
-make -C "$ROOT" build
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+    make -C "$ROOT" build ARCH="$ARCH" VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER"
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
@@ -45,9 +50,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.11</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>15</string>
+    <string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

@@ -68,7 +68,7 @@ static NSColor *SecondaryTextColor(void) {
 }
 
 static NSColor *MutedTextColor(void) {
-    return HexColorAlpha(0xFFFFFF, 0.52);
+    return HexColorAlpha(0xFFFFFF, 0.62);
 }
 
 static NSColor *MuteTextColor(void) {
@@ -98,9 +98,9 @@ static const CGFloat DashboardInputHeight = 30.0;
 static const CGFloat DashboardDropdownHeight = 26.0;
 static const CGFloat DashboardSmallButtonHeight = 30.0;
 static const CGFloat DashboardPrimaryButtonHeight = 32.0;
-static const CGFloat DashboardCardCornerRadius = 12.0;
+static const CGFloat DashboardCardCornerRadius = 8.0;
 static const CGFloat DashboardFieldCornerRadius = 8.0;
-static const CGFloat DashboardButtonCornerRadius = 9.0;
+static const CGFloat DashboardButtonCornerRadius = 8.0;
 static const CGFloat DashboardFormLabelWidth = 36.0;
 static const CGFloat DashboardFormLabelGap = 8.0;
 static const CGFloat DashboardEnglishFormLabelWidth = 58.0;
@@ -113,6 +113,33 @@ static const CGFloat DashboardFieldTextInsetX = 10.0;
 
 static NSString *Trimmed(NSString *value) {
     return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+}
+
+static BOOL ParsePortValue(NSString *value, uint16_t *portOut) {
+    NSString *text = Trimmed(value);
+    if (!text.length) {
+        return NO;
+    }
+
+    NSUInteger port = 0;
+    for (NSUInteger index = 0; index < text.length; index++) {
+        unichar character = [text characterAtIndex:index];
+        if (character < '0' || character > '9') {
+            return NO;
+        }
+        port = port * 10 + (NSUInteger)(character - '0');
+        if (port > UINT16_MAX) {
+            return NO;
+        }
+    }
+
+    if (port == 0) {
+        return NO;
+    }
+    if (portOut) {
+        *portOut = (uint16_t)port;
+    }
+    return YES;
 }
 
 static NSString *CompactFormatText(NSString *format) {
@@ -232,7 +259,9 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 @interface PanelView : NSView
 @property (nonatomic, strong) NSColor *fillColor;
 @property (nonatomic, strong) NSColor *borderColor;
+@property (nonatomic, strong) NSColor *accentColor;
 @property (nonatomic, assign) CGFloat cornerRadius;
+@property (nonatomic, assign) CGFloat accentHeight;
 @end
 
 @implementation PanelView
@@ -244,6 +273,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
         _fillColor = GlassFill(0.72);
         _borderColor = HexColorAlpha(0xFFFFFF, 0.12);
         _cornerRadius = DashboardCardCornerRadius;
+        _accentHeight = 0;
     }
     return self;
 }
@@ -256,6 +286,17 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
         : [NSBezierPath bezierPathWithRect:rect];
     [self.fillColor setFill];
     [path fill];
+    if (self.accentColor && self.accentHeight > 0) {
+        [NSGraphicsContext saveGraphicsState];
+        [path addClip];
+        [self.accentColor setFill];
+        NSRect accentRect = NSMakeRect(NSMinX(rect),
+                                      NSMinY(rect),
+                                      NSWidth(rect),
+                                      MIN(self.accentHeight, NSHeight(rect)));
+        NSRectFill(accentRect);
+        [NSGraphicsContext restoreGraphicsState];
+    }
     if (self.borderColor) {
         [self.borderColor setStroke];
         path.lineWidth = 1.0;
@@ -281,9 +322,14 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     return self;
 }
 - (BOOL)isFlipped { return YES; }
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityRole { return NSAccessibilityStaticTextRole; }
+- (NSString *)accessibilityLabel { return Localized(self.language, @"接收状态", @"Receiver status"); }
+- (NSString *)accessibilityValue { return self.title ?: @""; }
 - (void)setTitle:(NSString *)title {
     _title = [title copy];
     self.needsDisplay = YES;
+    NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
 }
 - (void)setDotColor:(NSColor *)dotColor {
     _dotColor = dotColor;
@@ -318,6 +364,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 @property (nonatomic, assign) double volume;
 @property (nonatomic, assign, getter=isMuted) BOOL muted;
 @property (nonatomic, assign) DashboardLanguage language;
+@property (nonatomic, assign) BOOL trackingVolumeDrag;
 @end
 
 @implementation LevelMeterView
@@ -332,6 +379,25 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityRole { return NSAccessibilitySliderRole; }
+- (NSString *)accessibilityLabel { return Localized(self.language, @"音量", @"Volume"); }
+- (id)accessibilityValue { return @((NSInteger)llround(self.volume * 100)); }
+- (id)accessibilityMinValue { return @(0); }
+- (id)accessibilityMaxValue { return @(100); }
+- (NSString *)accessibilityValueDescription {
+    return [NSString stringWithFormat:@"%ld%%", (long)llround(self.volume * 100)];
+}
+- (BOOL)accessibilityPerformIncrement {
+    self.volume += 0.05;
+    [self sendAction:self.action to:self.target];
+    return YES;
+}
+- (BOOL)accessibilityPerformDecrement {
+    self.volume -= 0.05;
+    [self sendAction:self.action to:self.target];
+    return YES;
+}
 - (BOOL)becomeFirstResponder {
     self.needsDisplay = YES;
     return YES;
@@ -348,6 +414,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 - (void)setVolume:(double)volume {
     _volume = MIN(MAX(volume, 0), 1);
     [self updateToolTip];
+    NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
     self.needsDisplay = YES;
 }
 - (void)setMuted:(BOOL)muted {
@@ -440,6 +507,14 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     [HexColorAlpha(0x0B0D0F, 0.28) setStroke];
     thumbPath.lineWidth = 0.5;
     [thumbPath stroke];
+
+    if (self.window.firstResponder == self) {
+        NSRect focusRect = NSInsetRect(volumeTrack, -5, -8);
+        NSBezierPath *focusPath = [NSBezierPath bezierPathWithRoundedRect:focusRect xRadius:7 yRadius:7];
+        [SystemHighlightColorAlpha(0.72) setStroke];
+        focusPath.lineWidth = 1.4;
+        [focusPath stroke];
+    }
 }
 - (NSRect)levelTrackRect {
     return [self meterTrackRect];
@@ -483,10 +558,21 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 }
 - (void)mouseDown:(NSEvent *)event {
     [self.window makeFirstResponder:self];
-    [self updateVolumeWithEvent:event];
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    self.trackingVolumeDrag = [self pointHitsVolumeControl:point];
+    if (self.trackingVolumeDrag) {
+        [self updateVolumeWithPoint:point];
+    }
 }
 - (void)mouseDragged:(NSEvent *)event {
-    [self updateVolumeWithEvent:event];
+    if (!self.trackingVolumeDrag) {
+        return;
+    }
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    [self updateVolumeWithPoint:point];
+}
+- (void)mouseUp:(NSEvent *)event {
+    self.trackingVolumeDrag = NO;
 }
 - (void)keyDown:(NSEvent *)event {
     NSString *characters = event.charactersIgnoringModifiers ?: @"";
@@ -520,9 +606,11 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 
     [super keyDown:event];
 }
-- (void)updateVolumeWithEvent:(NSEvent *)event {
+- (BOOL)pointHitsVolumeControl:(NSPoint)point {
+    return NSPointInRect(point, NSInsetRect([self volumeTrackRect], -8, -12));
+}
+- (void)updateVolumeWithPoint:(NSPoint)point {
     NSRect track = [self volumeTrackRect];
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     self.volume = (point.x - track.origin.x) / track.size.width;
     [self sendAction:self.action to:self.target];
 }
@@ -780,6 +868,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     if (!editable && self.currentEditor) {
         [self.window makeFirstResponder:nil];
     }
+    [self updateFittedFont];
     self.needsDisplay = YES;
 }
 - (void)updateTrackingAreas {
@@ -821,12 +910,13 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     NSString *text = self.stringValue.length ? self.stringValue : self.placeholder;
     CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : 132;
     self.font = FittedSystemFont(text ?: @"", width - DashboardFieldTextInsetX * 2, 13.5, 11.0, NSFontWeightSemibold);
-    self.textColor = PrimaryTextColor();
+    BOOL locked = !self.editable || !self.enabled;
+    self.textColor = locked ? HexColorAlpha(0xE6EEF2, 0.56) : PrimaryTextColor();
     if (self.placeholder.length) {
         self.placeholderAttributedString = [[NSAttributedString alloc] initWithString:self.placeholder
                                                                            attributes:@{
             NSFontAttributeName: self.font ?: SystemFont(13.5, NSFontWeightSemibold),
-            NSForegroundColorAttributeName: MutedTextColor()
+            NSForegroundColorAttributeName: locked ? HexColorAlpha(0xE6EEF2, 0.44) : MutedTextColor()
         }];
     }
 }
@@ -839,12 +929,17 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect
                                                          xRadius:DashboardFieldCornerRadius
                                                          yRadius:DashboardFieldCornerRadius];
-    CGFloat fillAlpha = self.isFocused ? 0.14 : (self.hovered ? 0.105 : 0.08);
+    BOOL locked = !self.editable || !self.enabled;
+    CGFloat fillAlpha = locked ? 0.045 : (self.isFocused ? 0.14 : (self.hovered ? 0.105 : 0.08));
     [GlassFieldFill(fillAlpha) setFill];
     [path fill];
-    [(self.isFocused ? AccentColorAlpha(0.78) : HexColorAlpha(0xFFFFFF, self.hovered ? 0.18 : 0.13)) setStroke];
-    path.lineWidth = self.isFocused ? 1.6 : 1.0;
+    NSColor *strokeColor = locked
+        ? HexColorAlpha(0xFFFFFF, 0.075)
+        : (self.isFocused ? AccentColorAlpha(0.78) : HexColorAlpha(0xFFFFFF, self.hovered ? 0.18 : 0.13));
+    [strokeColor setStroke];
+    path.lineWidth = self.isFocused && !locked ? 1.6 : 1.0;
     [path stroke];
+    self.textColor = locked ? HexColorAlpha(0xE6EEF2, 0.56) : PrimaryTextColor();
     [super drawRect:dirtyRect];
 }
 @end
@@ -918,6 +1013,7 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 @interface CompactDropdownButton : NSControl
 @property (nonatomic, strong) NSMutableArray<NSString *> *items;
 @property (nonatomic, assign) NSInteger selectedIndex;
+@property (nonatomic, assign) BOOL hovered;
 @property (nonatomic, readonly) NSInteger indexOfSelectedItem;
 @property (nonatomic, readonly) NSInteger numberOfItems;
 - (void)addItemsWithTitles:(NSArray<NSString *> *)titles;
@@ -939,6 +1035,22 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (BOOL)mouseDownCanMoveWindow { return NO; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    self.hovered = YES;
+    self.needsDisplay = YES;
+}
+- (void)mouseExited:(NSEvent *)event {
+    self.hovered = NO;
+    self.needsDisplay = YES;
+}
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSString *)accessibilityRole { return NSAccessibilityPopUpButtonRole; }
 - (NSString *)accessibilityLabel { return self.toolTip ?: @"Latency"; }
@@ -984,9 +1096,9 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect
                                                          xRadius:DashboardButtonCornerRadius
                                                          yRadius:DashboardButtonCornerRadius];
-    [GlassFieldFill(0.18) setFill];
+    [GlassFieldFill(self.hovered ? 0.23 : 0.18) setFill];
     [path fill];
-    [HexColorAlpha(0xFFFFFF, 0.16) setStroke];
+    [HexColorAlpha(0xFFFFFF, self.hovered ? 0.24 : 0.16) setStroke];
     path.lineWidth = 1;
     [path stroke];
 
@@ -1083,6 +1195,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @property (nonatomic, assign) CompactButtonStyle compactStyle;
 @property (nonatomic, assign) CompactButtonGlyph glyph;
 @property (nonatomic, assign) DashboardLanguage language;
+@property (nonatomic, assign) BOOL hovered;
 @end
 
 @implementation CompactButton
@@ -1100,6 +1213,22 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     }
     return self;
 }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    self.hovered = YES;
+    self.needsDisplay = YES;
+}
+- (void)mouseExited:(NSEvent *)event {
+    self.hovered = NO;
+    self.needsDisplay = YES;
+}
 - (void)setTitle:(NSString *)title {
     [super setTitle:title ?: @""];
     self.needsDisplay = YES;
@@ -1115,26 +1244,27 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL highlighted = [self.cell isHighlighted];
     BOOL active = self.state == NSControlStateValueOn;
+    BOOL hovered = self.hovered && self.enabled;
     NSColor *fill = nil;
     NSColor *border = nil;
     NSColor *foreground = self.enabled ? PrimaryTextColor() : MutedTextColor();
 
     if (self.compactStyle == CompactButtonStylePrimary) {
-        fill = self.enabled ? AccentColorAlpha(highlighted ? 0.58 : 0.48) : GlassFieldFill(0.10);
-        border = self.enabled ? AccentColorAlpha(0.40) : HexColorAlpha(0xFFFFFF, 0.10);
+        fill = self.enabled ? AccentColorAlpha(highlighted ? 0.62 : (hovered ? 0.54 : 0.48)) : GlassFieldFill(0.10);
+        border = self.enabled ? AccentColorAlpha(hovered ? 0.56 : 0.40) : HexColorAlpha(0xFFFFFF, 0.10);
     } else if (self.compactStyle == CompactButtonStyleDanger) {
-        fill = self.enabled ? HexColorAlpha(0xF04438, highlighted ? 0.34 : 0.24) : GlassFieldFill(0.10);
-        border = self.enabled ? HexColorAlpha(0xF04438, 0.34) : HexColorAlpha(0xFFFFFF, 0.10);
+        fill = self.enabled ? HexColorAlpha(0xF04438, highlighted ? 0.40 : (hovered ? 0.30 : 0.24)) : GlassFieldFill(0.10);
+        border = self.enabled ? HexColorAlpha(0xF04438, hovered ? 0.46 : 0.34) : HexColorAlpha(0xFFFFFF, 0.10);
     } else if (self.compactStyle == CompactButtonStyleSystemAccent) {
-        fill = self.enabled ? SystemHighlightColorAlpha(highlighted ? 0.62 : 0.52) : GlassFieldFill(0.10);
-        border = self.enabled ? SystemHighlightColorAlpha(0.68) : HexColorAlpha(0xFFFFFF, 0.10);
+        fill = self.enabled ? SystemHighlightColorAlpha(highlighted ? 0.66 : (hovered ? 0.58 : 0.52)) : GlassFieldFill(0.10);
+        border = self.enabled ? SystemHighlightColorAlpha(hovered ? 0.78 : 0.68) : HexColorAlpha(0xFFFFFF, 0.10);
     } else if (self.compactStyle == CompactButtonStyleMuteRed) {
-        fill = self.enabled ? HexColorAlpha(0xF04438, highlighted ? 0.54 : 0.42) : GlassFieldFill(0.10);
-        border = self.enabled ? HexColorAlpha(0xF04438, 0.60) : HexColorAlpha(0xFFFFFF, 0.10);
+        fill = self.enabled ? HexColorAlpha(0xF04438, highlighted ? 0.58 : (hovered ? 0.48 : 0.42)) : GlassFieldFill(0.10);
+        border = self.enabled ? HexColorAlpha(0xF04438, hovered ? 0.72 : 0.60) : HexColorAlpha(0xFFFFFF, 0.10);
     } else {
-        CGFloat fillAlpha = active ? 0.24 : 0.18;
+        CGFloat fillAlpha = active ? 0.25 : (hovered ? 0.22 : 0.18);
         fill = GlassFieldFill(self.enabled ? (highlighted ? fillAlpha + 0.06 : fillAlpha) : 0.10);
-        border = HexColorAlpha(0xFFFFFF, self.enabled ? (active ? 0.22 : 0.16) : 0.10);
+        border = HexColorAlpha(0xFFFFFF, self.enabled ? (active ? 0.24 : (hovered ? 0.22 : 0.16)) : 0.10);
     }
 
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
@@ -1188,12 +1318,38 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @end
 
 @interface SparkleRepairButton : NSButton
+@property (nonatomic, assign) BOOL hovered;
 @end
 
 @implementation SparkleRepairButton
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (BOOL)mouseDownCanMoveWindow { return NO; }
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.bordered = NO;
+        self.imagePosition = NSNoImage;
+        [self setButtonType:NSButtonTypeMomentaryPushIn];
+    }
+    return self;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    self.hovered = YES;
+    self.needsDisplay = YES;
+}
+- (void)mouseExited:(NSEvent *)event {
+    self.hovered = NO;
+    self.needsDisplay = YES;
+}
 - (void)performClick:(id)sender {
     if (!self.enabled) {
         return;
@@ -1231,8 +1387,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL highlighted = self.highlighted || [self.cell isHighlighted];
-    CGFloat fillAlpha = self.enabled ? (highlighted ? 0.24 : 0.14) : 0.10;
-    CGFloat borderAlpha = self.enabled ? (highlighted ? 0.24 : 0.16) : 0.10;
+    CGFloat fillAlpha = self.enabled ? (highlighted ? 0.28 : (self.hovered ? 0.22 : 0.14)) : 0.10;
+    CGFloat borderAlpha = self.enabled ? (highlighted ? 0.30 : (self.hovered ? 0.25 : 0.16)) : 0.10;
     NSRect rect = NSInsetRect(self.bounds, 0.5, 0.5);
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect
                                                          xRadius:DashboardButtonCornerRadius
@@ -1246,15 +1402,25 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
     paragraph.alignment = NSTextAlignmentCenter;
     NSFont *font = [NSFont fontWithName:@"Apple Color Emoji" size:12] ?: SystemFont(12, NSFontWeightSemibold);
+    CGFloat glyphAlpha = self.enabled ? ((highlighted || self.hovered) ? 0.94 : 0.78) : 0.50;
     NSDictionary *attrs = @{
         NSFontAttributeName: font,
-        NSForegroundColorAttributeName: [PrimaryTextColor() colorWithAlphaComponent:self.enabled ? 0.95 : 0.58],
+        NSForegroundColorAttributeName: [PrimaryTextColor() colorWithAlphaComponent:glyphAlpha],
         NSParagraphStyleAttributeName: paragraph
     };
     [NSGraphicsContext saveGraphicsState];
-    CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, self.enabled ? 0.92 : 0.56);
+    CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, glyphAlpha);
     [@"✨" drawInRect:NSMakeRect(0, 6, self.bounds.size.width, 16) withAttributes:attrs];
     [NSGraphicsContext restoreGraphicsState];
+
+    if (self.window.firstResponder == self) {
+        NSBezierPath *focusPath = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 2.5, 2.5)
+                                                                  xRadius:DashboardButtonCornerRadius - 2
+                                                                  yRadius:DashboardButtonCornerRadius - 2];
+        [SystemHighlightColorAlpha(0.72) setStroke];
+        focusPath.lineWidth = 1.2;
+        [focusPath stroke];
+    }
 }
 @end
 
@@ -1369,9 +1535,21 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         _header.borderColor = nil;
         _header.cornerRadius = 0;
         _inputCard = [[PanelView alloc] initWithFrame:NSZeroRect];
+        _inputCard.fillColor = HexColorAlpha(0x20303A, 0.78);
+        _inputCard.accentColor = AccentColorAlpha(0.62);
+        _inputCard.accentHeight = 3;
         _streamCard = [[PanelView alloc] initWithFrame:NSZeroRect];
+        _streamCard.fillColor = HexColorAlpha(0x202D34, 0.78);
+        _streamCard.accentColor = HexColorAlpha(0x7DD3FC, 0.40);
+        _streamCard.accentHeight = 3;
         _audioCard = [[PanelView alloc] initWithFrame:NSZeroRect];
+        _audioCard.fillColor = HexColorAlpha(0x1E3338, 0.80);
+        _audioCard.accentColor = HexColorAlpha(0x31D07E, 0.52);
+        _audioCard.accentHeight = 3;
         _networkCard = [[PanelView alloc] initWithFrame:NSZeroRect];
+        _networkCard.fillColor = HexColorAlpha(0x242E36, 0.78);
+        _networkCard.accentColor = HexColorAlpha(0xF4C45D, 0.42);
+        _networkCard.accentHeight = 3;
 
         [self addSubview:_glassBackground];
         [self addSubview:_header];
@@ -1474,7 +1652,6 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         _manualRepairButton.bezelStyle = NSBezelStyleRegularSquare;
         _manualRepairButton.bordered = NO;
         _manualRepairButton.imagePosition = NSNoImage;
-        _manualRepairButton.font = [NSFont fontWithName:@"Apple Color Emoji" size:13.5] ?: SystemFont(13.5, NSFontWeightSemibold);
         [_manualRepairButton setButtonType:NSButtonTypeMomentaryPushIn];
         if (@available(macOS 11.0, *)) {
             _manualRepairButton.image = nil;
@@ -1519,8 +1696,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (BOOL)mouseDownCanMoveWindow { return YES; }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:HexColor(0x303A40)
-                                                         endingColor:HexColor(0x283038)];
+    NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:HexColor(0x343D44)
+                                                         endingColor:HexColor(0x223138)];
     [gradient drawInRect:self.bounds angle:270.0];
     [HexColorAlpha(0xFFFFFF, 0.10) setStroke];
     NSBezierPath *path = [NSBezierPath bezierPath];
@@ -1933,9 +2110,14 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 
 @end
 
-@interface AppDelegate ()
+@interface AppDelegate () <NSWindowDelegate>
 
 @property (nonatomic, strong) NSWindow *window;
+@property (nonatomic, strong) NSStatusItem *statusItem;
+@property (nonatomic, strong) NSMenuItem *statusWindowItem;
+@property (nonatomic, strong) NSMenuItem *statusReceiveItem;
+@property (nonatomic, strong) NSMenuItem *statusRepairItem;
+@property (nonatomic, strong) NSMenuItem *statusAutoRepairItem;
 @property (nonatomic, strong) DashboardView *dashboard;
 @property (nonatomic, strong) VBANUDPReceiver *receiver;
 @property (nonatomic, strong) VBANAudioPlayer *audioPlayer;
@@ -1943,8 +2125,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @property (nonatomic, strong) id keyMonitor;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, strong, nullable) NSDate *lastPacketAt;
-@property (nonatomic, assign) BOOL hasLastFrameCounter;
-@property (nonatomic, assign) uint32_t lastFrameCounter;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastFrameCountersByIdentity;
 @property (nonatomic, assign) NSUInteger packetCount;
 @property (nonatomic, assign) NSUInteger badPacketCount;
 @property (nonatomic, assign) NSUInteger filteredPacketCount;
@@ -1958,6 +2139,12 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 
 - (void)installApplicationIcon;
 - (void)installKeyboardMonitor;
+- (void)installStatusItem;
+- (void)refreshStatusItem;
+- (void)showMainWindow:(id)sender;
+- (void)hideMainWindow:(id)sender;
+- (void)toggleMainWindow:(id)sender;
+- (void)toggleAutoRepairFromStatusItem:(id)sender;
 - (BOOL)isToggleReceiveKeyEvent:(NSEvent *)event;
 - (void)toggleReceiving:(id)sender;
 
@@ -1973,6 +2160,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.receiver = [[VBANUDPReceiver alloc] init];
     self.audioPlayer = [[VBANAudioPlayer alloc] init];
     self.stateMessage = @"Stopped";
+    self.lastFrameCountersByIdentity = [NSMutableDictionary dictionary];
 
     self.dashboard = [[DashboardView alloc] initWithFrame:NSMakeRect(0, 0, DashboardDefaultWidth, DashboardDefaultHeight)];
     self.dashboard.language = self.currentLanguage;
@@ -2017,6 +2205,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.window.titlebarAppearsTransparent = YES;
     self.window.titleVisibility = NSWindowTitleHidden;
     self.window.movableByWindowBackground = YES;
+    self.window.delegate = self;
     self.window.contentView = self.dashboard;
     self.window.autorecalculatesKeyViewLoop = NO;
     self.window.initialFirstResponder = nil;
@@ -2026,6 +2215,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:nil];
     [self installKeyboardMonitor];
+    [self installStatusItem];
 
     __weak typeof(self) weakSelf = self;
     self.audioPlayer.levelHandler = ^(double level) {
@@ -2083,9 +2273,135 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     }];
 }
 
+- (void)installStatusItem {
+    if (self.statusItem) {
+        [self refreshStatusItem];
+        return;
+    }
+
+    self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
+    NSStatusBarButton *button = self.statusItem.button;
+    button.toolTip = Localized(self.currentLanguage, @"VBAN 接收器", @"VBAN Receiver");
+    if (@available(macOS 11.0, *)) {
+        NSImage *image = [NSImage imageWithSystemSymbolName:@"dot.radiowaves.left.and.right"
+                                   accessibilityDescription:@"VBAN Receiver"];
+        image.template = YES;
+        button.image = image;
+        button.imagePosition = NSImageOnly;
+    } else {
+        button.title = @"VB";
+    }
+
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"VBAN Receiver"];
+    self.statusWindowItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                       action:@selector(toggleMainWindow:)
+                                                keyEquivalent:@""];
+    self.statusWindowItem.target = self;
+    [menu addItem:self.statusWindowItem];
+
+    self.statusReceiveItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                        action:@selector(toggleReceiving:)
+                                                 keyEquivalent:@""];
+    self.statusReceiveItem.target = self;
+    [menu addItem:self.statusReceiveItem];
+
+    self.statusRepairItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                       action:@selector(repairOutput:)
+                                                keyEquivalent:@""];
+    self.statusRepairItem.target = self;
+    [menu addItem:self.statusRepairItem];
+
+    self.statusAutoRepairItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                           action:@selector(toggleAutoRepairFromStatusItem:)
+                                                    keyEquivalent:@""];
+    self.statusAutoRepairItem.target = self;
+    [menu addItem:self.statusAutoRepairItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *logItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                     action:@selector(openDiagnosticLog:)
+                                              keyEquivalent:@""];
+    logItem.target = self;
+    logItem.tag = 1001;
+    [menu addItem:logItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@""
+                                                      action:@selector(terminate:)
+                                               keyEquivalent:@""];
+    quitItem.target = NSApp;
+    quitItem.tag = 1002;
+    [menu addItem:quitItem];
+
+    self.statusItem.menu = menu;
+    [self refreshStatusItem];
+}
+
+- (void)refreshStatusItem {
+    if (!self.statusItem) {
+        return;
+    }
+
+    BOOL windowVisible = self.window.visible;
+    self.statusItem.button.toolTip = Localized(self.currentLanguage, @"VBAN 接收器", @"VBAN Receiver");
+    self.statusWindowItem.title = windowVisible
+        ? Localized(self.currentLanguage, @"隐藏到菜单栏", @"Hide to Menu Bar")
+        : Localized(self.currentLanguage, @"显示窗口", @"Show Window");
+    self.statusReceiveItem.title = self.running
+        ? Localized(self.currentLanguage, @"停止接收", @"Stop Receiving")
+        : Localized(self.currentLanguage, @"开始接收", @"Start Receiving");
+    self.statusRepairItem.title = Localized(self.currentLanguage, @"✨ 修复输出", @"✨ Repair Output");
+    self.statusRepairItem.enabled = self.running;
+    self.statusAutoRepairItem.title = self.dashboard.autoRepairEnabled
+        ? Localized(self.currentLanguage, @"自动修复：开", @"Auto Repair: On")
+        : Localized(self.currentLanguage, @"自动修复：关", @"Auto Repair: Off");
+    self.statusAutoRepairItem.state = self.dashboard.autoRepairEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+
+    for (NSMenuItem *item in self.statusItem.menu.itemArray) {
+        if (item.tag == 1001) {
+            item.title = Localized(self.currentLanguage, @"打开诊断日志", @"Open Diagnostic Log");
+        } else if (item.tag == 1002) {
+            item.title = Localized(self.currentLanguage, @"退出 VBAN 接收器", @"Quit VBAN Receiver");
+        }
+    }
+}
+
+- (void)showMainWindow:(id)sender {
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.window makeKeyAndOrderFront:sender];
+    [self refreshStatusItem];
+}
+
+- (void)hideMainWindow:(id)sender {
+    [self.window orderOut:sender];
+    [self refreshStatusItem];
+}
+
+- (void)toggleMainWindow:(id)sender {
+    if (self.window.visible) {
+        [self hideMainWindow:sender];
+    } else {
+        [self showMainWindow:sender];
+    }
+}
+
+- (void)toggleAutoRepairFromStatusItem:(id)sender {
+    [self.dashboard setAutoRepairEnabled:!self.dashboard.autoRepairEnabled];
+    [self autoRepairPressed:sender];
+    [self refreshStatusItem];
+}
+
 - (BOOL)isToggleReceiveKeyEvent:(NSEvent *)event {
     NSEventModifierFlags blockedModifiers = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption;
     if ((event.modifierFlags & blockedModifiers) != 0) {
+        return NO;
+    }
+
+    NSResponder *firstResponder = self.window.firstResponder;
+    if ([firstResponder isKindOfClass:NSTextView.class] && [(NSTextView *)firstResponder isFieldEditor]) {
+        return NO;
+    }
+    if ([firstResponder isKindOfClass:NSControl.class] && firstResponder != self.dashboard.startButton) {
         return NO;
     }
 
@@ -2126,7 +2442,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [appMenu addItem:[self menuItemWithTitle:Localized(self.currentLanguage, @"打开诊断日志", @"Open Diagnostic Log")
                                       action:@selector(openDiagnosticLog:)
                                keyEquivalent:@""]];
-    [appMenu addItem:[self menuItemWithTitle:Localized(self.currentLanguage, @"修复输出", @"Repair Output")
+    [appMenu addItem:[self menuItemWithTitle:Localized(self.currentLanguage, @"✨ 修复输出", @"✨ Repair Output")
                                       action:@selector(repairOutput:)
                                keyEquivalent:@"r"]];
     [appMenu addItem:[NSMenuItem separatorItem]];
@@ -2196,7 +2512,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [mainMenu addItem:windowMenuItem];
 
     NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:windowMenuItem.title];
-    [windowMenu addItem:[self menuItemWithTitle:Localized(self.currentLanguage, @"关闭窗口", @"Close Window")
+    [windowMenu addItem:[self menuItemWithTitle:Localized(self.currentLanguage, @"隐藏到菜单栏", @"Hide to Menu Bar")
                                          action:@selector(performClose:)
                                   keyEquivalent:@"w"]];
     [windowMenu addItem:[NSMenuItem separatorItem]];
@@ -2226,6 +2542,21 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    return NO;
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    if (!flag) {
+        [self showMainWindow:sender];
+    }
+    return YES;
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (sender == self.window) {
+        [self hideMainWindow:sender];
+        return NO;
+    }
     return YES;
 }
 
@@ -2241,18 +2572,30 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [dockMenu addItem:toggleItem];
     [dockMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *repairItem = [[NSMenuItem alloc] initWithTitle:Localized(self.currentLanguage, @"修复输出", @"Repair Output")
+    NSMenuItem *repairItem = [[NSMenuItem alloc] initWithTitle:Localized(self.currentLanguage, @"✨ 修复输出", @"✨ Repair Output")
                                                         action:@selector(repairOutput:)
                                                  keyEquivalent:@""];
     repairItem.target = self;
+    repairItem.enabled = self.running;
     [dockMenu addItem:repairItem];
     return dockMenu;
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(repairOutput:)) {
+        return self.running;
+    }
+    return YES;
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     if (self.keyMonitor) {
         [NSEvent removeMonitor:self.keyMonitor];
         self.keyMonitor = nil;
+    }
+    if (self.statusItem) {
+        [NSStatusBar.systemStatusBar removeStatusItem:self.statusItem];
+        self.statusItem = nil;
     }
     [self.audioPlayer writeDiagnosticSnapshot:@"app-will-terminate"];
     [self.receiver stop];
@@ -2308,8 +2651,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (void)startPressed:(id)sender {
-    NSInteger portValue = self.dashboard.portValue.integerValue;
-    if (portValue <= 0 || portValue > 65535) {
+    uint16_t portValue = 0;
+    if (!ParsePortValue(self.dashboard.portValue, &portValue)) {
         [self.dashboard setErrorMessage:Localized(self.currentLanguage, @"端口必须是 1-65535", @"Port must be 1-65535")];
         return;
     }
@@ -2345,7 +2688,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     };
 
     NSError *error = nil;
-    BOOL started = [self.receiver startWithPort:(uint16_t)portValue
+    BOOL started = [self.receiver startWithPort:portValue
                                      streamName:self.dashboard.streamValue
                                      sourceHost:self.dashboard.sourceValue
                                           error:&error];
@@ -2392,6 +2735,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.currentLanguage = self.dashboard.language;
     self.window.title = Localized(self.currentLanguage, @"VBAN 接收器", @"VBAN Receiver");
     [self installMainMenu];
+    [self refreshStatusItem];
     [self refreshCounters];
     [self refreshState];
 }
@@ -2421,20 +2765,33 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.lastPacketAt = [NSDate date];
     [self.dashboard setErrorMessage:@""];
 
-    if (self.hasLastFrameCounter) {
-        uint32_t expected = self.lastFrameCounter + 1;
+    NSString *sequenceIdentity = [self sequenceIdentityForPacket:packet];
+    NSNumber *lastFrameCounter = self.lastFrameCountersByIdentity[sequenceIdentity];
+    if (lastFrameCounter) {
+        uint32_t previous = lastFrameCounter.unsignedIntValue;
+        uint32_t expected = previous + 1;
         if (packet.frameCounter != expected) {
-            uint32_t delta = packet.frameCounter - expected;
-            self.missingPacketCount += (delta > 0 && delta < 10000) ? delta : 1;
+            if (packet.frameCounter != previous) {
+                uint32_t delta = packet.frameCounter - expected;
+                self.missingPacketCount += (delta > 0 && delta < 10000) ? delta : 1;
+            }
         }
     }
-    self.hasLastFrameCounter = YES;
-    self.lastFrameCounter = packet.frameCounter;
+    self.lastFrameCountersByIdentity[sequenceIdentity] = @(packet.frameCounter);
 
     NSString *stream = packet.streamName.length ? packet.streamName : Localized(self.currentLanguage, @"（未命名）", @"(unnamed)");
     [self.dashboard setStream:stream sender:packet.sender format:packet.formatDescription];
     [self refreshCounters];
     [self refreshState];
+}
+
+- (NSString *)sequenceIdentityForPacket:(VBANPacket *)packet {
+    return [NSString stringWithFormat:@"%@|%@|%.0f|%lu|%u",
+            packet.sender ?: @"",
+            packet.streamName ?: @"",
+            packet.sampleRate,
+            (unsigned long)packet.channelCount,
+            packet.dataType];
 }
 
 - (void)timerFired:(NSTimer *)timer {
@@ -2457,8 +2814,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.filteredPacketCount = 0;
     self.missingPacketCount = 0;
     self.queueDropCount = 0;
-    self.hasLastFrameCounter = NO;
-    self.lastFrameCounter = 0;
+    [self.lastFrameCountersByIdentity removeAllObjects];
     self.lastPacketAt = nil;
     self.level = 0;
     self.targetLevel = 0;
@@ -2484,6 +2840,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     }
     [self.dashboard setRunning:self.running];
     [self.dashboard setStateText:self.stateMessage kind:kind];
+    [self refreshStatusItem];
 }
 
 @end

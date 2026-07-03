@@ -19,6 +19,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 @interface VBANAudioPlayer ()
 
 @property (nonatomic) dispatch_queue_t queue;
+@property (nonatomic) dispatch_queue_t diagnosticQueue;
 @property (nonatomic, assign) AudioQueueRef audioQueue;
 @property (nonatomic, assign) AudioStreamBasicDescription queueFormat;
 @property (nonatomic, assign) NSInteger scheduledBuffers;
@@ -51,6 +52,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 - (void)recoverStoppedAudioQueueOnQueue:(NSString *)reason;
 - (void)attemptAutomaticOutputRepairOnQueue:(NSString *)reason details:(NSDictionary<NSString *, id> *)details;
 - (void)resetAutoRepairSuspicionOnQueue;
+- (void)appendDiagnosticLine:(NSData *)line;
 
 @end
 
@@ -96,6 +98,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     self = [super init];
     if (self) {
         _queue = dispatch_queue_create("local.codex.vban.audio", DISPATCH_QUEUE_SERIAL);
+        _diagnosticQueue = dispatch_queue_create("local.codex.vban.diagnostics", DISPATCH_QUEUE_SERIAL);
         _outputVolume = 1.0f;
         _lockedOutputDeviceID = kAudioObjectUnknown;
         _observedOutputDeviceID = kAudioObjectUnknown;
@@ -1006,6 +1009,12 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     const char newline = '\n';
     [line appendBytes:&newline length:1];
 
+    dispatch_async(self.diagnosticQueue, ^{
+        [self appendDiagnosticLine:line];
+    });
+}
+
+- (void)appendDiagnosticLine:(NSData *)line {
     NSString *path = self.diagnosticLogPath;
     NSString *directory = path.stringByDeletingLastPathComponent;
     [[NSFileManager defaultManager] createDirectoryAtPath:directory

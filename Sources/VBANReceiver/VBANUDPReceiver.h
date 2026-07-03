@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^parseErrorHandler)(NSError *error);
 @property (nonatomic, copy, nullable) void (^filteredPacketHandler)(void);
 @property (nonatomic, copy, nullable) void (^stateHandler)(NSString *state);
+@property (nonatomic, assign, readonly) uint16_t localPort;
 
 - (BOOL)startWithPort:(uint16_t)port
            streamName:(nullable NSString *)streamName

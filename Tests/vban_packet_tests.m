@@ -74,6 +74,20 @@ int main(void) {
         AssertTrue(packet == nil, "unsupported codec rejects");
         AssertTrue(error.code == 4, "unsupported codec error code");
 
+        NSMutableData *trailingData = [MakePacket(16, 1, 1, VBANDataTypeInt16, 1, 0, @[@0x00, @0x00]) mutableCopy];
+        uint8_t extraByte = 0xAA;
+        [trailingData appendBytes:&extraByte length:1];
+        error = nil;
+        packet = [VBANPacket packetWithData:trailingData sender:@"" error:&error];
+        AssertTrue(packet == nil, "trailing payload rejects");
+        AssertTrue(error.code == 7, "trailing payload error code");
+
+        NSData *reservedBitData = MakePacket(16, 1, 1, VBANDataTypeInt16, 1, 0x08, @[@0x00, @0x00]);
+        error = nil;
+        packet = [VBANPacket packetWithData:reservedBitData sender:@"" error:&error];
+        AssertTrue(packet == nil, "reserved format bit rejects");
+        AssertTrue(error != nil, "reserved format bit error");
+
         puts("vban_packet_tests passed");
     }
     return 0;

@@ -9,7 +9,8 @@ typedef NS_ENUM(NSInteger, VBANPacketErrorCode) {
     VBANPacketErrorUnsupportedCodec,
     VBANPacketErrorUnsupportedSampleRate,
     VBANPacketErrorUnsupportedDataType,
-    VBANPacketErrorCorruptPayload
+    VBANPacketErrorCorruptPayload,
+    VBANPacketErrorInvalidFormat
 };
 
 static const NSUInteger VBANHeaderSize = 28;
@@ -143,6 +144,13 @@ NSUInteger VBANBytesPerSample(VBANDataType dataType) {
         return nil;
     }
 
+    if ((bytes[7] & 0x08) != 0) {
+        if (error) {
+            *error = VBANError(VBANPacketErrorInvalidFormat, @"Reserved VBAN format bit is set");
+        }
+        return nil;
+    }
+
     uint8_t dataTypeRaw = bytes[7] & 0x07;
     if (dataTypeRaw > VBANDataTypeFloat64) {
         if (error) {
@@ -157,7 +165,7 @@ NSUInteger VBANBytesPerSample(VBANDataType dataType) {
     NSUInteger expectedPayloadSize = sampleCount * channelCount * VBANBytesPerSample(dataType);
     NSUInteger actualPayloadSize = length - VBANHeaderSize;
 
-    if (actualPayloadSize < expectedPayloadSize) {
+    if (actualPayloadSize != expectedPayloadSize) {
         if (error) {
             *error = VBANError(VBANPacketErrorCorruptPayload, [NSString stringWithFormat:@"Payload size mismatch: expected %lu, got %lu", (unsigned long)expectedPayloadSize, (unsigned long)actualPayloadSize]);
         }

@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+static void *VBANUDPReceiverQueueKey = &VBANUDPReceiverQueueKey;
+
 @interface VBANUDPReceiver ()
 
 @property (nonatomic) dispatch_queue_t queue;
@@ -16,6 +18,7 @@
 @property (nonatomic, copy, nullable) NSString *streamName;
 @property (nonatomic, copy, nullable) NSString *sourceHost;
 @property (nonatomic, assign) int socketFD;
+@property (nonatomic, assign, readwrite) uint16_t localPort;
 
 @end
 
@@ -25,9 +28,14 @@
     self = [super init];
     if (self) {
         _queue = dispatch_queue_create("local.codex.vban.udp", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_set_specific(_queue, VBANUDPReceiverQueueKey, (__bridge void *)self, NULL);
         _socketFD = -1;
     }
     return self;
+}
+
+- (void)dealloc {
+    [self stop];
 }
 
 - (BOOL)startWithPort:(uint16_t)port
@@ -46,6 +54,9 @@
 
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    int receiveBufferSize = 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receiveBufferSize, sizeof(receiveBufferSize));
 
     int no = 0;
     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no));
@@ -71,10 +82,30 @@
         return NO;
     }
 
+    struct sockaddr_in6 boundAddress;
+    memset(&boundAddress, 0, sizeof(boundAddress));
+    socklen_t boundLength = sizeof(boundAddress);
+    uint16_t localPort = port;
+    if (getsockname(fd, (struct sockaddr *)&boundAddress, &boundLength) == 0) {
+        localPort = ntohs(boundAddress.sin6_port);
+    }
+
     self.socketFD = fd;
+    self.localPort = localPort;
     self.streamName = streamName.length ? streamName : nil;
     self.sourceHost = sourceHost.length ? sourceHost : nil;
     self.source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, self.queue);
+    if (!self.source) {
+        close(fd);
+        self.socketFD = -1;
+        self.localPort = 0;
+        if (error) {
+            *error = [NSError errorWithDomain:NSPOSIXErrorDomain
+                                         code:ENOMEM
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Cannot create UDP dispatch source"}];
+        }
+        return NO;
+    }
 
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.source, ^{
@@ -89,11 +120,12 @@
 }
 
 - (void)stop {
-    dispatch_sync(self.queue, ^{
+    void (^stopBlock)(void) = ^{
         dispatch_source_t source = self.source;
         int fd = self.socketFD;
         self.source = nil;
         self.socketFD = -1;
+        self.localPort = 0;
 
         if (source) {
             dispatch_source_cancel(source);
@@ -101,7 +133,13 @@
         if (fd >= 0) {
             close(fd);
         }
-    });
+    };
+
+    if (dispatch_get_specific(VBANUDPReceiverQueueKey) == (__bridge void *)self) {
+        stopBlock();
+    } else {
+        dispatch_sync(self.queue, stopBlock);
+    }
 
     if (self.stateHandler) {
         self.stateHandler(@"Stopped");
@@ -117,7 +155,12 @@
         uint8_t buffer[65535];
         struct sockaddr_storage senderAddress;
         socklen_t senderLength = sizeof(senderAddress);
-        ssize_t byteCount = recvfrom(self.socketFD,
+        int fd = self.socketFD;
+        if (fd < 0) {
+            return;
+        }
+
+        ssize_t byteCount = recvfrom(fd,
                                      buffer,
                                      sizeof(buffer),
                                      0,
