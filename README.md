@@ -90,11 +90,13 @@ Compressed VBAN codecs and serial/text subprotocols are intentionally ignored.
 
 ## Playback Options
 
-The latency menu changes the playback buffering policy:
+The latency menu controls how much audio the receiver buffers before and during playback:
 
-- `Low latency`: starts playback as soon as possible and keeps a short queue.
-- `Balanced`: default setting for normal local-network use.
-- `Stable`: keeps a deeper queue for unstable Wi-Fi or bursty senders.
+- `Optimal`: default setting for normal local-network use.
+- `Fast`: shorter queue for lower latency on a stable network.
+- `Medium`: more buffering for occasional jitter.
+- `Slow`: deeper buffer for unstable Wi-Fi.
+- `Very Slow`: maximum buffering for bursty or unreliable streams.
 
 ## Packaging Note
 
