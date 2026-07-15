@@ -105,8 +105,3 @@ The latency menu controls how much audio the receiver buffers before and during 
 ## Toolchain Note
 
 This project uses Objective-C/AppKit and builds with `clang`. It requires Xcode Command Line Tools, but not the full Xcode app. The current release is a single-architecture `arm64` Mach-O binary for Apple Silicon, not a Universal binary.
-
-## Contributors
-
-- [XiaoLeXLDW](https://github.com/XiaoLeXLDW) - Project creator and maintainer.
-- OpenAI Codex - Development, documentation, and release support.
