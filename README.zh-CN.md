@@ -108,7 +108,3 @@ make build
 
 本项目基于 Objective-C/AppKit，使用 `clang` 构建。构建时需要 Xcode Command Line Tools，但无需安装完整 Xcode。当前 release 是仅包含 `arm64` 架构的 Mach-O，面向 Apple Silicon，不是 Universal binary。
 
-## 贡献者
-
-- [XiaoLeXLDW](https://github.com/XiaoLeXLDW) - 项目创建与维护。
-- OpenAI Codex - 开发、文档与发布协作。
