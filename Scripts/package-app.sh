@@ -6,9 +6,10 @@ APP_NAME="VBAN Receiver"
 BINARY_NAME="VBANReceiver"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 BUILD_BIN="$ROOT/.build/$BINARY_NAME"
-VERSION="${VERSION:-0.3.12}"
-BUILD_NUMBER="${BUILD_NUMBER:-16}"
+VERSION="${VERSION:-0.3.13}"
+BUILD_NUMBER="${BUILD_NUMBER:-17}"
 ARCH="${ARCH:-arm64}"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     make -C "$ROOT" build ARCH="$ARCH" VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER"
@@ -25,6 +26,7 @@ fi
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
+cp "$ROOT/LICENSE" "$APP_DIR/Contents/Resources/LICENSE.txt"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -66,7 +68,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 PLIST
 
 if command -v codesign >/dev/null 2>&1; then
-    codesign --force --deep --sign - "$APP_DIR" >/dev/null
+    if [[ "$SIGN_IDENTITY" == "-" ]]; then
+        codesign --force --deep --sign - "$APP_DIR" >/dev/null
+        echo "Signed ad-hoc for local validation only." >&2
+    else
+        codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
+        echo "Signed with '$SIGN_IDENTITY'; notarize and staple before public distribution." >&2
+    fi
 fi
 
 echo "$APP_DIR"

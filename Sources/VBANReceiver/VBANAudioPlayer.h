@@ -14,14 +14,17 @@ typedef NS_ENUM(NSInteger, VBANPlaybackProfile) {
 
 @interface VBANAudioPlayer : NSObject
 
-@property (nonatomic, copy, nullable) void (^levelHandler)(double level);
-@property (nonatomic, copy, nullable) void (^errorHandler)(NSString *message);
-@property (nonatomic, copy, nullable) void (^queueDropHandler)(void);
-@property (nonatomic, assign) VBANPlaybackProfile playbackProfile;
-@property (nonatomic, assign) float outputVolume;
-@property (nonatomic, assign) BOOL locksOutputDevice;
-@property (nonatomic, assign) BOOL autoRepairsOutput;
-@property (nonatomic, copy, readonly) NSString *diagnosticLogPath;
+@property (atomic, copy, nullable) void (^levelHandler)(double level);
+@property (atomic, copy, nullable) void (^errorHandler)(NSString *message);
+@property (atomic, copy, nullable) void (^queueDropHandler)(NSUInteger count);
+@property (atomic, copy, nullable) void (^outputAvailabilityHandler)(BOOL available, NSString * _Nullable deviceName);
+@property (atomic, copy, nullable) void (^playbackStartedHandler)(void);
+@property (atomic, assign) VBANPlaybackProfile playbackProfile;
+@property (atomic, assign) float outputVolume;
+@property (atomic, assign) BOOL locksOutputDevice;
+@property (atomic, assign) BOOL autoRepairsOutput;
+@property (atomic, assign) BOOL levelReportingEnabled;
+@property (atomic, copy, readonly) NSString *diagnosticLogPath;
 
 - (void)enqueuePacket:(VBANPacket *)packet;
 - (void)writeDiagnosticSnapshot:(NSString *)reason;

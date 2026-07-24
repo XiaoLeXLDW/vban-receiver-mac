@@ -21,6 +21,7 @@
   <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-334155">
   <img alt="CoreAudio" src="https://img.shields.io/badge/Audio-CoreAudio-0f766e">
   <img alt="VBAN" src="https://img.shields.io/badge/Protocol-VBAN-f97316">
+  <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-22c55e">
 </p>
 
 ![VBAN Receiver main window](docs/assets/vban-receiver-app-en.png)
@@ -37,7 +38,7 @@
 - Plays PCM streams through the default macOS output device.
 - Optional filtering by stream name and sender host.
 - Volume, mute, automatic output recovery, and latency controls.
-- Network counters for received data, missing packets, filtered packets, errors, and queue depth.
+- Network counters for received data, missing packets, filtered packets, errors, and audio recovery/drop events.
 
 ## Quick Start
 
@@ -102,6 +103,14 @@ The latency menu controls how much audio the receiver buffers before and during 
 
 `make app` creates a local Apple Silicon `arm64` app bundle in `dist/` and signs it ad hoc for local testing. Public distribution still needs Developer ID signing and notarization.
 
+`make validate-app` only validates the existing bundle and never rebuilds it. Before a public release, run `make validate-release-tree`, package with a Developer ID identity, then run `make validate-release VERSION=... BUILD_NUMBER=...` after notarization and stapling.
+
+VBAN itself does not authenticate senders. Use the receiver on a trusted LAN and set `Source` when practical; the host name or IP is resolved once when reception starts.
+
 ## Toolchain Note
 
 This project uses Objective-C/AppKit and builds with `clang`. It requires Xcode Command Line Tools, but not the full Xcode app. The current release is a single-architecture `arm64` Mach-O binary for Apple Silicon, not a Universal binary.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

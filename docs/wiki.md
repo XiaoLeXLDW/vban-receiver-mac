@@ -12,7 +12,7 @@
 
 VBAN Receiver 在 macOS 上监听一个 UDP 端口，解析 VoiceMeeter 发来的 VBAN AUDIO 数据包，把支持的 PCM 采样转换成 CoreAudio 可播放的 32-bit float 音频，并输出到当前默认音频设备。
 
-接收器使用 IPv6 UDP socket，并关闭 `IPV6_V6ONLY`，所以同一个监听 socket 可以接收 IPv6 和 IPv4 映射地址。界面里的 `来源/Source` 过滤按发送端 host 精确匹配，不包含端口。
+接收器使用 IPv6 UDP socket，并关闭 `IPV6_V6ONLY`，所以同一个监听 socket 可以接收 IPv6 和 IPv4 映射地址。界面里的 `来源/Source` 会在开始接收时解析为 IPv4/IPv6 地址集合，再按发送端二进制地址匹配，不包含端口。
 
 ## 架构
 
@@ -37,8 +37,8 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 - 顶部栏：应用标题、语言切换、接收状态。
 - 输入源：端口、流名、来源过滤、开始/停止接收。
 - 当前流：当前收到的流名、发送端、音频格式。
-- 音频输出：音量、电平、延迟、静音、自动修复、手动修复、重置次数。
-- 网络状态：数据、丢包、过滤、错误、队列和质量状态。
+- 音频输出：音量、电平、延迟、静音、自动修复、手动修复、恢复/丢弃事件数。
+- 网络状态：数据、丢包、过滤、错误、UDP 传输标识和质量状态。
 
 ## 顶部栏
 
@@ -83,9 +83,10 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 用于按发送端 host 过滤。
 
 - 留空：接收任意发送端。
-- 填写 host/IP：只接收完全匹配的发送端 host。
+- 填写 host/IP：开始接收时解析主机名，只接收解析结果中的 IPv4/IPv6 地址。
 - IPv4 映射地址会显示为普通 IPv4，例如 `192.168.1.20`。
 - 不要填写端口；发送端显示区可能会展示 `host:port`，但过滤使用的是 host。
+- VBAN 不提供发送者认证；请在可信局域网中使用，来源过滤只是地址白名单。
 
 ### 开始接收 / Start Receiving
 
@@ -167,23 +168,23 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 自动修复 / Auto
 
-自动修复默认关闭。开启后，如果检测到输出队列看起来卡住、CoreAudio 输出状态异常或输出设备变更，app 会尝试自动重连输出队列。
+自动修复默认关闭。开启后，如果检测到输出队列持续堆积或设备持续未运行，app 会尝试自动重连输出队列。手动修复本身不会触发后续自动修复。系统默认输出变更由独立的稳定窗口处理，不依赖此开关。
 
 适合以下情况：
 
 - 蓝牙耳机或外接声卡切换后没有声音。
-- 系统默认输出设备改变。
+- 输出设备切换完成后队列仍持续堆积或设备未运行。
 - 音频队列显示运行但实际没有正常消耗。
 
 ### 手动修复 / Sparkle 按钮
 
 按钮显示为 `✨`。运行中点击会：
 
-- 锁定当前默认输出设备策略。
-- 重连 CoreAudio 输出。
+- 重连当前有效的 CoreAudio 输出。
+- 保持原有的默认输出跟随或设备锁定策略不变。
 - 重置音频输出和缓冲队列。
 - 写入诊断快照。
-- 增加 `Reset / 重置` 计数。
+- 增加 `Recovery/Drop / 恢复/丢弃` 事件计数。
 
 这个按钮适合“能收到数据但没声音”的恢复场景。
 
@@ -197,9 +198,9 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 - 音量百分比仍保留原来的滑块值。
 - 取消静音后恢复原来的输出音量。
 
-### Reset / 重置
+### Recovery/Drop / 恢复/丢弃
 
-显示输出队列被重置的次数，包括：
+显示音频恢复和入口丢弃事件数，包括：
 
 - 手动修复。
 - 队列压力过高时主动丢弃/重置缓冲。
@@ -231,7 +232,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 错误 / Errors
 
-无效 VBAN 包、UDP 接收错误、解析错误会计入错误数量，并显示错误消息。
+无效 VBAN 包、UDP 接收错误、解析错误和音频输出错误会计入错误数量，并显示错误消息。
 
 常见错误包括：
 
@@ -240,9 +241,9 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 - 音频格式无法解码。
 - CoreAudio 无法创建或写入输出队列。
 
-### Queue / 队列
+### UDP
 
-底部队列文字用于显示队列状态。当前界面主显示为 `Queue: 0 / 队列：0`，输出队列重置次数显示在音频输出区域的 `Reset / 重置`。
+底部 `UDP` 文字表示网络传输协议，不是队列计数；音频恢复和入口丢弃事件数显示在音频输出区域的 `Recovery/Drop / 恢复/丢弃`。
 
 ### Normal / Check
 
@@ -269,7 +270,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 ~/Library/Logs/VBAN Receiver/diagnostics.jsonl
 ```
 
-日志采用 JSON Lines，每一行是一个事件或快照。
+日志采用 JSON Lines，每一行是一个事件或快照。活动日志达到 10 MB 后轮转，保留 `diagnostics.jsonl.1` 和 `diagnostics.jsonl.2` 两代备份。
 
 ### Repair Output
 

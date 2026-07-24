@@ -12,7 +12,7 @@ This wiki documents every area, button, field, status, menu item, and common tro
 
 VBAN Receiver listens on a UDP port, parses VBAN AUDIO packets from VoiceMeeter, converts supported PCM samples into CoreAudio-friendly 32-bit float audio, and plays the stream through the current default macOS output device.
 
-The receiver uses an IPv6 UDP socket with `IPV6_V6ONLY` disabled, so the same listener can receive IPv6 and IPv4-mapped traffic. The `Source` filter matches the sender host exactly and does not include the sender port.
+The receiver uses an IPv6 UDP socket with `IPV6_V6ONLY` disabled, so the same listener can receive IPv6 and IPv4-mapped traffic. When reception starts, the `Source` filter resolves to a set of IPv4/IPv6 addresses and matches the sender's binary address without its port.
 
 ## Architecture
 
@@ -37,8 +37,8 @@ The window is fixed at `600 x 400` and is not resizable. It is split into these 
 - Header: app title, language switch, and receiver status.
 - Input: UDP port, stream filter, source filter, and start/stop control.
 - Current Stream: current stream name, sender, and audio format.
-- Audio Output: volume, level meter, latency profile, mute, automatic repair, manual repair, and reset count.
-- Network Status: data, missing packets, filtered packets, errors, queue status, and quality summary.
+- Audio Output: volume, level meter, latency profile, mute, automatic repair, manual repair, and recovery/drop events.
+- Network Status: data, missing packets, filtered packets, errors, UDP transport, and quality summary.
 
 ## Header
 
@@ -83,9 +83,10 @@ Filters by VBAN stream name.
 Filters by sender host.
 
 - Empty: accept any sender.
-- Filled: accept only packets from the exact host/IP.
+- Filled: resolve the host name when reception starts and accept its matching IPv4/IPv6 addresses.
 - IPv4-mapped IPv6 addresses are displayed as normal IPv4 addresses, for example `192.168.1.20`.
 - Do not include the port. The Current Stream area may show `host:port`, but filtering uses only the host.
+- VBAN does not authenticate senders. Use it on a trusted LAN; the source filter is only an address allowlist.
 
 ### Start Receiving
 
@@ -167,23 +168,23 @@ Changing the latency profile writes a diagnostic snapshot. It does not stop UDP 
 
 ### Auto
 
-Automatic repair is off by default. When enabled, the app tries to reconnect output if it detects a stuck output queue, CoreAudio output state anomaly, or output device change.
+Automatic repair is off by default. When enabled, the app tries to reconnect output after sustained queue growth or a device that remains not running. A manual repair does not by itself trigger later automatic repairs. Default-output changes use a separate stabilization path and do not depend on this switch.
 
 Use it when:
 
 - Audio disappears after switching Bluetooth headphones or external sound cards.
-- The system default output device changes.
+- The queue keeps growing or the device remains not running after an output switch completes.
 - The audio queue reports that it is running, but output is not behaving normally.
 
 ### Sparkle Repair Button
 
 The button is shown as `✨`. While running, clicking it:
 
-- Locks the current default output device policy.
-- Reconnects CoreAudio output.
+- Reconnects the current effective CoreAudio output.
+- Preserves the existing default-following or device-locking policy.
 - Resets audio output and the buffer queue.
 - Writes a diagnostic snapshot.
-- Increments the `Reset` count.
+- Increments the `Recovery/Drop` event count.
 
 Use it when packets are arriving but no sound is heard.
 
@@ -197,9 +198,9 @@ When muted:
 - The volume slider keeps its previous value.
 - Unmuting restores the previous output volume.
 
-### Reset
+### Recovery/Drop
 
-Shows the number of output queue resets. This can increase because of:
+Shows audio recovery and ingress-drop events. This can increase because of:
 
 - Manual repair.
 - Buffer pressure causing queued audio to be dropped/reset.
@@ -240,9 +241,9 @@ Common causes:
 - The audio format cannot be decoded.
 - CoreAudio cannot create or enqueue output buffers.
 
-### Queue
+### UDP
 
-The lower queue text currently shows `Queue: 0 / 队列：0`. Output queue reset count is shown in the Audio Output area as `Reset`.
+The lower `UDP` label identifies the network transport; it is not a queue counter. Audio recovery and ingress-drop events are shown in the Audio Output area as `Recovery/Drop`.
 
 ### Normal / Check
 
@@ -269,7 +270,7 @@ Opens the diagnostic log location:
 ~/Library/Logs/VBAN Receiver/diagnostics.jsonl
 ```
 
-The log uses JSON Lines. Each line is one event or snapshot.
+The log uses JSON Lines. Each line is one event or snapshot. The active file rotates at 10 MB and keeps `diagnostics.jsonl.1` and `diagnostics.jsonl.2` as two backups.
 
 ### Repair Output
 

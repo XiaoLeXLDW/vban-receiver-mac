@@ -6,11 +6,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface VBANUDPReceiver : NSObject
 
-@property (nonatomic, copy, nullable) void (^packetHandler)(VBANPacket *packet);
-@property (nonatomic, copy, nullable) void (^parseErrorHandler)(NSError *error);
-@property (nonatomic, copy, nullable) void (^filteredPacketHandler)(void);
-@property (nonatomic, copy, nullable) void (^stateHandler)(NSString *state);
-@property (nonatomic, assign, readonly) uint16_t localPort;
+@property (atomic, copy, nullable) void (^packetHandler)(VBANPacket *packet);
+@property (atomic, copy, nullable) void (^parseErrorHandler)(NSError *error);
+@property (atomic, copy, nullable) void (^filteredPacketHandler)(void);
+@property (atomic, copy, nullable) void (^stateHandler)(NSString *state);
+@property (atomic, assign, readonly) uint16_t localPort;
 
 - (BOOL)startWithPort:(uint16_t)port
            streamName:(nullable NSString *)streamName

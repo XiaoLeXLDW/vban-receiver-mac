@@ -1,9 +1,98 @@
 #import "VBANAudioPlayer.h"
+#import "VBANActivityPolicy.h"
+#import "VBANCountCoalescer.h"
+#import "VBANOutputRecoveryPolicy.h"
 #import "VBANPacket.h"
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/CoreAudio.h>
+#import <errno.h>
+#import <fcntl.h>
 #import <math.h>
+#import <sys/file.h>
+#import <unistd.h>
+
+static const NSUInteger VBANDiagnosticLogMaximumBytes = 10 * 1024 * 1024;
+static const NSUInteger VBANDiagnosticLogBackupCount = 2;
+static const NSUInteger VBANAudioIngressMaximumPendingTasks = 256;
+static const NSUInteger VBANAudioIngressMaximumPendingBytes = 8 * 1024 * 1024;
+static const NSTimeInterval VBANAudioQueueConfigurationMinimumInterval = 1.0;
+static const void *VBANAudioQueueSpecificKey = &VBANAudioQueueSpecificKey;
+static const void *VBANDiagnosticQueueSpecificKey = &VBANDiagnosticQueueSpecificKey;
+
+static NSTimeInterval VBANMonotonicTime(void) {
+    return NSProcessInfo.processInfo.systemUptime;
+}
+
+typedef NS_ENUM(NSInteger, VBANAutomaticRepairSignal) {
+    VBANAutomaticRepairSignalNone = 0,
+    VBANAutomaticRepairSignalDeviceNotRunning = 1,
+    VBANAutomaticRepairSignalQueueLagging = 2
+};
+
+BOOL VBANAudioIngressCanAcceptPacket(NSUInteger pendingTaskCount,
+                                     NSUInteger pendingBytes,
+                                     NSUInteger packetBytes,
+                                     NSUInteger maximumTaskCount,
+                                     NSUInteger maximumBytes) {
+    if (pendingTaskCount >= maximumTaskCount || packetBytes > maximumBytes) {
+        return NO;
+    }
+    return pendingBytes <= maximumBytes - packetBytes;
+}
+
+NSInteger VBANAudioAutomaticRepairSignal(BOOL autoRepairEnabled,
+                                         BOOL queueStarted,
+                                         BOOL hasFreshPackets,
+                                         BOOL queueReportsRunning,
+                                         BOOL hasScheduledFrames,
+                                         BOOL deviceRunningKnown,
+                                         BOOL deviceRunning,
+                                         double queuedDuration,
+                                         double maximumQueuedDuration,
+                                         __unused BOOL manualRepairRecently) {
+    if (!autoRepairEnabled
+        || !queueStarted
+        || !hasFreshPackets
+        || !queueReportsRunning
+        || !hasScheduledFrames) {
+        return VBANAutomaticRepairSignalNone;
+    }
+    if (deviceRunningKnown && !deviceRunning) {
+        return VBANAutomaticRepairSignalDeviceNotRunning;
+    }
+    if (queuedDuration > fmax(0.65, maximumQueuedDuration * 0.85)) {
+        return VBANAutomaticRepairSignalQueueLagging;
+    }
+    return VBANAutomaticRepairSignalNone;
+}
+
+float VBANAudioSanitizedFloatSample(double value) {
+    if (!isfinite(value)) {
+        return 0.0f;
+    }
+    float sample = (float)value;
+    if (!isfinite(sample)) {
+        return value < 0 ? -1.0f : 1.0f;
+    }
+    return fminf(fmaxf(sample, -1.0f), 1.0f);
+}
+
+BOOL VBANAudioQueueConfigurationAttemptAllowed(BOOL configurationRequired,
+                                                double secondsSinceLastAttempt) {
+    return !configurationRequired
+        || secondsSinceLastAttempt < 0
+        || secondsSinceLastAttempt >= VBANAudioQueueConfigurationMinimumInterval;
+}
+
+BOOL VBANAudioPlaybackNotificationNeeded(BOOL hasAudioQueue,
+                                         BOOL audioQueueStarted,
+                                         NSUInteger generation,
+                                         NSUInteger notifiedGeneration) {
+    return hasAudioQueue
+        && audioQueueStarted
+        && generation != notifiedGeneration;
+}
 
 static OSStatus VBANCoreAudioOutputChanged(AudioObjectID inObjectID,
                                            UInt32 inNumberAddresses,
@@ -16,14 +105,31 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
                                           AudioQueueRef inAQ,
                                           AudioQueueBufferRef inBuffer);
 
+@class VBANOutputDeviceState;
+@class VBANCoreAudioListenerContext;
+@class VBANAudioQueueCallbackContext;
+
 @interface VBANAudioPlayer ()
 
 @property (nonatomic) dispatch_queue_t queue;
 @property (nonatomic) dispatch_queue_t diagnosticQueue;
+@property (nonatomic, strong) NSObject *ingressLock;
+@property (nonatomic, assign) VBANPlaybackProfile configuredPlaybackProfile;
+@property (nonatomic, assign) float configuredOutputVolume;
+@property (nonatomic, assign) BOOL configuredLocksOutputDevice;
+@property (nonatomic, assign) BOOL configuredAutoRepairsOutput;
+@property (nonatomic, assign) BOOL configuredLevelReportingEnabled;
 @property (nonatomic, assign) AudioQueueRef audioQueue;
+@property (nonatomic, assign, nullable) void *audioQueueCallbackContext;
+@property (nonatomic, assign) NSUInteger audioQueueGeneration;
+@property (nonatomic, assign) NSUInteger notifiedPlaybackGeneration;
 @property (nonatomic, assign) AudioStreamBasicDescription queueFormat;
 @property (nonatomic, assign) NSInteger scheduledBuffers;
 @property (nonatomic, assign) UInt64 scheduledFrames;
+@property (nonatomic, assign) NSUInteger pendingPacketTasks;
+@property (nonatomic, assign) NSUInteger pendingPacketBytes;
+@property (nonatomic, strong) VBANCountCoalescer *queueDropCoalescer;
+@property (nonatomic, assign) CFAbsoluteTime lastAudioQueueConfigurationAttemptAt;
 @property (nonatomic, assign) NSInteger maxQueuedBuffers;
 @property (nonatomic, assign) NSTimeInterval maxQueuedDuration;
 @property (nonatomic, assign) NSInteger startBufferCount;
@@ -37,31 +143,111 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 @property (nonatomic, assign) CFAbsoluteTime autoRepairSuspicionStartedAt;
 @property (nonatomic, assign) AudioObjectID observedOutputDeviceID;
 @property (nonatomic, assign) AudioObjectID lockedOutputDeviceID;
+@property (nonatomic, copy, nullable) NSString *lockedOutputDeviceUID;
+@property (nonatomic, assign) BOOL lockedOutputIdentityCaptured;
 @property (nonatomic, assign) BOOL hasQueueFormat;
 @property (nonatomic, assign) BOOL audioQueueStarted;
 @property (nonatomic, assign) BOOL hasDefaultOutputListener;
 @property (nonatomic, assign) BOOL hasDefaultSystemOutputListener;
+@property (nonatomic, assign) BOOL hasDeviceListListener;
 @property (nonatomic, assign) BOOL hasOutputDeviceListeners;
+@property (nonatomic, assign) BOOL priorDeviceListenerRemovalFailed;
+@property (nonatomic, assign, nullable) void *coreAudioListenerContext;
 @property (nonatomic, assign) BOOL hasAudioQueueRunningListener;
 @property (nonatomic, strong) dispatch_source_t audioQueueWatchdog;
+@property (nonatomic, strong) dispatch_source_t outputChangeTimer;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *pendingOutputSelectors;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *pendingOutputObjectIDs;
+@property (nonatomic, assign) VBANOutputNotificationState outputNotificationState;
+@property (nonatomic, assign) NSUInteger outputChangeTimerGeneration;
+@property (nonatomic, copy, nullable) NSString *activeOutputDeviceUID;
+@property (nonatomic, assign) NSUInteger activeOutputChannelCount;
+@property (nonatomic, assign) BOOL outputUnavailable;
+@property (nonatomic, copy, nullable) NSString *outputUnavailableDeviceName;
+@property (nonatomic, assign) BOOL outputRecoveryPending;
+@property (nonatomic, assign) BOOL outputRecoveryPermitted;
+@property (nonatomic, assign) NSUInteger outputRecoveryGeneration;
 @property (nonatomic, copy) NSString *autoRepairSuspicionReason;
 
-- (void)coreAudioOutputConfigurationChanged;
-- (void)audioQueueRunningChangedOnQueue:(AudioQueueRef)queue;
+- (BOOL)removeCoreAudioOutputListeners;
+- (BOOL)removeObservedOutputDeviceListeners;
+- (void)coreAudioOutputConfigurationChangedForObjectID:(AudioObjectID)objectID
+                                              selectors:(NSArray<NSNumber *> *)selectors;
+- (void)recordOutputChangeOnQueueForObjectID:(AudioObjectID)objectID
+                                    selectors:(NSArray<NSNumber *> *)selectors;
+- (void)evaluatePendingOutputChangesOnQueue;
+- (void)evaluateOutputStateOnQueueWithReason:(NSString *)reason
+                           notificationCount:(NSUInteger)notificationCount
+                                   selectors:(NSArray<NSNumber *> *)selectors
+                                   objectIDs:(NSArray<NSNumber *> *)objectIDs;
+- (VBANOutputDeviceState *)desiredOutputDeviceStateOnQueue;
+- (AudioObjectID)deviceIDForUID:(nullable NSString *)deviceUID;
+- (void)restartAudioQueueOnQueueForDecision:(VBANOutputRecoveryDecision)decision
+                                    details:(NSDictionary<NSString *, id> *)details;
+- (void)setOutputUnavailableOnQueue:(BOOL)unavailable deviceName:(nullable NSString *)deviceName;
+- (void)beginOutputRestoreDeadlineOnQueue;
+- (void)completeOutputRestoreIfRunningOnQueue;
+- (void)notifyPlaybackStartedOnQueueIfNeeded;
+- (void)reportPlaybackErrorOnQueue:(NSString *)message;
+- (void)finishPendingPacketTaskWithBytes:(NSUInteger)packetBytes;
+- (void)reportQueueDropCount:(NSUInteger)count;
+- (BOOL)shouldAttemptAudioQueueConfigurationForPacketOnQueue:(VBANPacket *)packet;
+- (BOOL)hasFreshPacketsOnQueue;
+- (BOOL)hasEnoughAudioToStartOnQueue;
+- (NSString *)outputPropertySelectorName:(AudioObjectPropertySelector)selector;
+- (void)audioQueueRunningChangedOnQueue:(AudioQueueRef)queue generation:(NSUInteger)generation;
 - (void)checkAudioQueueHealthOnQueue;
 - (void)recoverStoppedAudioQueueOnQueue:(NSString *)reason;
 - (void)attemptAutomaticOutputRepairOnQueue:(NSString *)reason details:(NSDictionary<NSString *, id> *)details;
 - (void)resetAutoRepairSuspicionOnQueue;
 - (void)appendDiagnosticLine:(NSData *)line;
+- (void)rotateDiagnosticLogIfNeededForIncomingBytes:(NSUInteger)incomingBytes;
+- (BOOL)copyTailOfLogAtPath:(NSString *)sourcePath toPath:(NSString *)destinationPath maxBytes:(NSUInteger)maxBytes;
 
 @end
 
-static OSStatus VBANCoreAudioOutputChanged(__unused AudioObjectID inObjectID,
-                                           __unused UInt32 inNumberAddresses,
-                                           __unused const AudioObjectPropertyAddress inAddresses[],
+@interface VBANOutputDeviceState : NSObject
+@property (nonatomic, assign) AudioObjectID deviceID;
+@property (nonatomic, copy, nullable) NSString *deviceUID;
+@property (nonatomic, copy, nullable) NSString *deviceName;
+@property (nonatomic, assign) BOOL available;
+@property (nonatomic, assign) NSUInteger outputChannels;
+@property (nonatomic, strong, nullable) NSNumber *alive;
+@property (nonatomic, strong, nullable) NSNumber *sampleRate;
+@end
+
+@implementation VBANOutputDeviceState
+@end
+
+@interface VBANCoreAudioListenerContext : NSObject
+@property (nonatomic, weak, nullable) VBANAudioPlayer *player;
+@end
+
+@implementation VBANCoreAudioListenerContext
+@end
+
+@interface VBANAudioQueueCallbackContext : NSObject
+@property (nonatomic, weak, nullable) VBANAudioPlayer *player;
+@property (nonatomic, assign) NSUInteger generation;
+@end
+
+@implementation VBANAudioQueueCallbackContext
+@end
+
+static OSStatus VBANCoreAudioOutputChanged(AudioObjectID inObjectID,
+                                           UInt32 inNumberAddresses,
+                                           const AudioObjectPropertyAddress inAddresses[],
                                            void *inClientData) {
-    VBANAudioPlayer *player = (__bridge VBANAudioPlayer *)inClientData;
-    [player coreAudioOutputConfigurationChanged];
+    VBANCoreAudioListenerContext *context = (__bridge VBANCoreAudioListenerContext *)inClientData;
+    VBANAudioPlayer *player = context.player;
+    if (!player) {
+        return noErr;
+    }
+    NSMutableArray<NSNumber *> *selectors = [NSMutableArray arrayWithCapacity:inNumberAddresses];
+    for (UInt32 index = 0; index < inNumberAddresses; index++) {
+        [selectors addObject:@(inAddresses[index].mSelector)];
+    }
+    [player coreAudioOutputConfigurationChangedForObjectID:inObjectID selectors:selectors];
     return noErr;
 }
 
@@ -72,9 +258,14 @@ static void VBANAudioQueueIsRunningChanged(void *inUserData,
         return;
     }
 
-    VBANAudioPlayer *player = (__bridge VBANAudioPlayer *)inUserData;
+    VBANAudioQueueCallbackContext *context = (__bridge VBANAudioQueueCallbackContext *)inUserData;
+    VBANAudioPlayer *player = context.player;
+    if (!player) {
+        return;
+    }
+    NSUInteger generation = context.generation;
     dispatch_async(player.queue, ^{
-        [player audioQueueRunningChangedOnQueue:inAQ];
+        [player audioQueueRunningChangedOnQueue:inAQ generation:generation];
     });
 }
 
@@ -82,11 +273,16 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
                                           AudioQueueRef inAQ,
                                           AudioQueueBufferRef inBuffer) {
     UInt64 frameCount = (UInt64)(uintptr_t)inBuffer->mUserData;
-    VBANAudioPlayer *player = (__bridge VBANAudioPlayer *)inUserData;
-    @synchronized (player) {
-        if (player.audioQueue == inAQ && player.scheduledBuffers > 0) {
-            player.scheduledBuffers = MAX(0, player.scheduledBuffers - 1);
-            player.scheduledFrames = player.scheduledFrames > frameCount ? player.scheduledFrames - frameCount : 0;
+    VBANAudioQueueCallbackContext *context = (__bridge VBANAudioQueueCallbackContext *)inUserData;
+    VBANAudioPlayer *player = context.player;
+    if (player) {
+        @synchronized (player) {
+            if (player.audioQueue == inAQ
+                && player.audioQueueGeneration == context.generation
+                && player.scheduledBuffers > 0) {
+                player.scheduledBuffers = MAX(0, player.scheduledBuffers - 1);
+                player.scheduledFrames = player.scheduledFrames > frameCount ? player.scheduledFrames - frameCount : 0;
+            }
         }
     }
     AudioQueueFreeBuffer(inAQ, inBuffer);
@@ -99,10 +295,25 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     if (self) {
         _queue = dispatch_queue_create("local.codex.vban.audio", DISPATCH_QUEUE_SERIAL);
         _diagnosticQueue = dispatch_queue_create("local.codex.vban.diagnostics", DISPATCH_QUEUE_SERIAL);
-        _outputVolume = 1.0f;
+        _ingressLock = [[NSObject alloc] init];
+        dispatch_queue_set_specific(_queue,
+                                    VBANAudioQueueSpecificKey,
+                                    (__bridge void *)self,
+                                    NULL);
+        dispatch_queue_set_specific(_diagnosticQueue,
+                                    VBANDiagnosticQueueSpecificKey,
+                                    (__bridge void *)self,
+                                    NULL);
+        _configuredOutputVolume = 1.0f;
         _lockedOutputDeviceID = kAudioObjectUnknown;
         _observedOutputDeviceID = kAudioObjectUnknown;
-        _playbackProfile = VBANPlaybackProfileOptimal;
+        _pendingOutputSelectors = [NSMutableSet set];
+        _pendingOutputObjectIDs = [NSMutableSet set];
+        _queueDropCoalescer = [[VBANCountCoalescer alloc] init];
+        VBANCoreAudioListenerContext *listenerContext = [[VBANCoreAudioListenerContext alloc] init];
+        listenerContext.player = self;
+        _coreAudioListenerContext = (__bridge_retained void *)listenerContext;
+        _configuredPlaybackProfile = VBANPlaybackProfileOptimal;
         [self applyPlaybackProfile:VBANPlaybackProfileOptimal];
         [self installCoreAudioOutputListeners];
         dispatch_async(_queue, ^{
@@ -113,11 +324,38 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 }
 
 - (void)dealloc {
-    [self removeCoreAudioOutputListeners];
-    [self teardownAudioQueueOnQueue];
+    __unsafe_unretained VBANAudioPlayer *unsafeSelf = self;
+    __block BOOL removedAllListeners = YES;
+    void (^cleanup)(void) = ^{
+        VBANCoreAudioListenerContext *listenerContext = unsafeSelf.coreAudioListenerContext
+            ? (__bridge VBANCoreAudioListenerContext *)unsafeSelf.coreAudioListenerContext
+            : nil;
+        listenerContext.player = nil;
+        removedAllListeners = [unsafeSelf removeCoreAudioOutputListeners];
+        if (unsafeSelf.outputChangeTimer) {
+            dispatch_source_cancel(unsafeSelf.outputChangeTimer);
+            unsafeSelf.outputChangeTimer = nil;
+        }
+        [unsafeSelf teardownAudioQueueOnQueue];
+        if (unsafeSelf.coreAudioListenerContext) {
+            if (VBANCoreAudioListenerContextCanRelease(
+                    removedAllListeners,
+                    unsafeSelf.priorDeviceListenerRemovalFailed)) {
+                CFRelease(unsafeSelf.coreAudioListenerContext);
+            }
+            // A failed CoreAudio unregister keeps this tiny nil-target context alive.
+            unsafeSelf.coreAudioListenerContext = NULL;
+        }
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        cleanup();
+    } else {
+        dispatch_sync(self.queue, cleanup);
+    }
 }
 
 - (void)installCoreAudioOutputListeners {
+    void *listenerContext = self.coreAudioListenerContext;
     AudioObjectPropertyAddress defaultOutputAddress = {
         kAudioHardwarePropertyDefaultOutputDevice,
         kAudioObjectPropertyScopeGlobal,
@@ -126,7 +364,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     if (AudioObjectAddPropertyListener(kAudioObjectSystemObject,
                                        &defaultOutputAddress,
                                        VBANCoreAudioOutputChanged,
-                                       (__bridge void *)self) == noErr) {
+                                       listenerContext) == noErr) {
         self.hasDefaultOutputListener = YES;
     }
 
@@ -138,24 +376,38 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     if (AudioObjectAddPropertyListener(kAudioObjectSystemObject,
                                        &defaultSystemOutputAddress,
                                        VBANCoreAudioOutputChanged,
-                                       (__bridge void *)self) == noErr) {
+                                       listenerContext) == noErr) {
         self.hasDefaultSystemOutputListener = YES;
+    }
+
+    AudioObjectPropertyAddress deviceListAddress = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectAddPropertyListener(kAudioObjectSystemObject,
+                                       &deviceListAddress,
+                                       VBANCoreAudioOutputChanged,
+                                       listenerContext) == noErr) {
+        self.hasDeviceListListener = YES;
     }
 
     [self refreshObservedOutputDevice];
 }
 
-- (void)removeCoreAudioOutputListeners {
+- (BOOL)removeCoreAudioOutputListeners {
+    void *listenerContext = self.coreAudioListenerContext;
+    BOOL removedAll = YES;
     AudioObjectPropertyAddress defaultOutputAddress = {
         kAudioHardwarePropertyDefaultOutputDevice,
         kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyElementMain
     };
     if (self.hasDefaultOutputListener) {
-        AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
-                                          &defaultOutputAddress,
-                                          VBANCoreAudioOutputChanged,
-                                          (__bridge void *)self);
+        removedAll = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
+                                                       &defaultOutputAddress,
+                                                       VBANCoreAudioOutputChanged,
+                                                       listenerContext) == noErr && removedAll;
         self.hasDefaultOutputListener = NO;
     }
 
@@ -165,23 +417,39 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         kAudioObjectPropertyElementMain
     };
     if (self.hasDefaultSystemOutputListener) {
-        AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
-                                          &defaultSystemOutputAddress,
-                                          VBANCoreAudioOutputChanged,
-                                          (__bridge void *)self);
+        removedAll = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
+                                                       &defaultSystemOutputAddress,
+                                                       VBANCoreAudioOutputChanged,
+                                                       listenerContext) == noErr && removedAll;
         self.hasDefaultSystemOutputListener = NO;
     }
 
-    [self removeObservedOutputDeviceListeners];
+    AudioObjectPropertyAddress deviceListAddress = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (self.hasDeviceListListener) {
+        removedAll = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
+                                                       &deviceListAddress,
+                                                       VBANCoreAudioOutputChanged,
+                                                       listenerContext) == noErr && removedAll;
+        self.hasDeviceListListener = NO;
+    }
+
+    return [self removeObservedOutputDeviceListeners] && removedAll;
 }
 
 - (void)refreshObservedOutputDevice {
     AudioObjectID deviceID = [self desiredOutputDeviceIDOnQueue];
-    if (deviceID == kAudioObjectUnknown || deviceID == self.observedOutputDeviceID) {
+    if (deviceID == self.observedOutputDeviceID) {
         return;
     }
 
     [self removeObservedOutputDeviceListeners];
+    if (deviceID == kAudioObjectUnknown) {
+        return;
+    }
     self.observedOutputDeviceID = deviceID;
     [self addObservedOutputDeviceListeners];
     [self writeDiagnosticEventOnQueue:@"observed-output-device-changed"
@@ -207,18 +475,18 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         if (AudioObjectAddPropertyListener(self.observedOutputDeviceID,
                                            &addresses[index],
                                            VBANCoreAudioOutputChanged,
-                                           (__bridge void *)self) == noErr) {
+                                           self.coreAudioListenerContext) == noErr) {
             addedAny = YES;
         }
     }
     self.hasOutputDeviceListeners = addedAny;
 }
 
-- (void)removeObservedOutputDeviceListeners {
+- (BOOL)removeObservedOutputDeviceListeners {
     if (!self.hasOutputDeviceListeners || self.observedOutputDeviceID == kAudioObjectUnknown) {
         self.observedOutputDeviceID = kAudioObjectUnknown;
         self.hasOutputDeviceListeners = NO;
-        return;
+        return YES;
     }
 
     AudioObjectPropertyAddress addresses[] = {
@@ -229,14 +497,19 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         { kAudioDevicePropertyHogMode, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain }
     };
 
+    BOOL removedAll = YES;
     for (NSUInteger index = 0; index < sizeof(addresses) / sizeof(addresses[0]); index++) {
-        AudioObjectRemovePropertyListener(self.observedOutputDeviceID,
-                                          &addresses[index],
-                                          VBANCoreAudioOutputChanged,
-                                          (__bridge void *)self);
+        removedAll = AudioObjectRemovePropertyListener(self.observedOutputDeviceID,
+                                                       &addresses[index],
+                                                       VBANCoreAudioOutputChanged,
+                                                       self.coreAudioListenerContext) == noErr && removedAll;
     }
+    self.priorDeviceListenerRemovalFailed =
+        VBANCoreAudioListenerRemovalFailureRecorded(self.priorDeviceListenerRemovalFailed,
+                                                    removedAll);
     self.observedOutputDeviceID = kAudioObjectUnknown;
     self.hasOutputDeviceListeners = NO;
+    return removedAll;
 }
 
 - (AudioObjectID)currentDefaultOutputDeviceID {
@@ -275,12 +548,53 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 
 - (AudioObjectID)desiredOutputDeviceIDOnQueue {
     if (self.locksOutputDevice) {
-        if (self.lockedOutputDeviceID == kAudioObjectUnknown) {
-            self.lockedOutputDeviceID = [self currentDefaultOutputDeviceID];
+        if (!self.lockedOutputIdentityCaptured || !self.lockedOutputDeviceUID.length) {
+            return kAudioObjectUnknown;
         }
+        self.lockedOutputDeviceID = [self deviceIDForUID:self.lockedOutputDeviceUID];
         return self.lockedOutputDeviceID;
     }
     return [self currentDefaultOutputDeviceID];
+}
+
+- (AudioObjectID)deviceIDForUID:(NSString *)deviceUID {
+    if (!deviceUID.length) {
+        return kAudioObjectUnknown;
+    }
+    AudioObjectPropertyAddress address = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject,
+                                       &address,
+                                       0,
+                                       NULL,
+                                       &size) != noErr || size == 0) {
+        return kAudioObjectUnknown;
+    }
+    NSUInteger count = size / sizeof(AudioObjectID);
+    AudioObjectID *deviceIDs = calloc(count, sizeof(AudioObjectID));
+    if (!deviceIDs) {
+        return kAudioObjectUnknown;
+    }
+    AudioObjectID match = kAudioObjectUnknown;
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject,
+                                   &address,
+                                   0,
+                                   NULL,
+                                   &size,
+                                   deviceIDs) == noErr) {
+        for (NSUInteger index = 0; index < count; index++) {
+            if ([[self deviceUIDForDeviceID:deviceIDs[index]] isEqualToString:deviceUID]) {
+                match = deviceIDs[index];
+                break;
+            }
+        }
+    }
+    free(deviceIDs);
+    return match;
 }
 
 - (NSString *)desiredOutputDeviceUIDOnQueue {
@@ -312,14 +626,14 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     return CFBridgingRelease(deviceUID);
 }
 
-- (void)applyOutputDevicePolicyOnQueue {
+- (BOOL)applyOutputDevicePolicyOnQueue {
     if (!self.audioQueue) {
-        return;
+        return NO;
     }
 
     NSString *deviceUID = [self desiredOutputDeviceUIDOnQueue];
     if (!deviceUID.length) {
-        return;
+        return NO;
     }
 
     CFStringRef uid = (__bridge CFStringRef)deviceUID;
@@ -327,6 +641,11 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
                                             kAudioQueueProperty_CurrentDevice,
                                             &uid,
                                             sizeof(uid));
+    if (status == noErr) {
+        VBANOutputDeviceState *state = [self desiredOutputDeviceStateOnQueue];
+        self.activeOutputDeviceUID = deviceUID;
+        self.activeOutputChannelCount = state.outputChannels;
+    }
     [self writeDiagnosticEventOnQueue:@"audio-queue-set-current-device"
                               details:@{
         @"deviceUID": deviceUID,
@@ -334,6 +653,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         @"device": [self dictionaryForDeviceID:[self desiredOutputDeviceIDOnQueue]]
     }
                       includeSnapshot:NO];
+    return status == noErr;
 }
 
 - (void)startAudioQueueWatchdogOnQueue {
@@ -367,8 +687,10 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     self.audioQueueWatchdog = nil;
 }
 
-- (void)audioQueueRunningChangedOnQueue:(AudioQueueRef)queue {
-    if (!self.audioQueue || self.audioQueue != queue) {
+- (void)audioQueueRunningChangedOnQueue:(AudioQueueRef)queue generation:(NSUInteger)generation {
+    if (!self.audioQueue
+        || self.audioQueue != queue
+        || self.audioQueueGeneration != generation) {
         return;
     }
 
@@ -393,6 +715,8 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 
     if (stopped) {
         [self recoverStoppedAudioQueueOnQueue:@"is-running-property"];
+    } else {
+        [self completeOutputRestoreIfRunningOnQueue];
     }
 }
 
@@ -402,24 +726,24 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         return;
     }
 
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime now = VBANMonotonicTime();
     NSString *desiredDeviceUID = [self desiredOutputDeviceUIDOnQueue];
     id currentDeviceUID = [self audioQueueCurrentDeviceUIDOnQueue];
     if (desiredDeviceUID.length
-        && [currentDeviceUID isKindOfClass:NSString.class]
-        && ![(NSString *)currentDeviceUID isEqualToString:desiredDeviceUID]) {
+        && ((self.activeOutputDeviceUID.length
+             && ![self.activeOutputDeviceUID isEqualToString:desiredDeviceUID])
+            || ([currentDeviceUID isKindOfClass:NSString.class]
+                && ![(NSString *)currentDeviceUID isEqualToString:desiredDeviceUID]))) {
         [self writeDiagnosticEventOnQueue:@"audio-queue-device-drift"
                                   details:@{
             @"currentDeviceUID": currentDeviceUID,
             @"desiredDeviceUID": desiredDeviceUID
         }
                           includeSnapshot:YES];
-        [self applyOutputDevicePolicyOnQueue];
-        [self attemptAutomaticOutputRepairOnQueue:@"device-drift"
-                                          details:@{
-            @"currentDeviceUID": currentDeviceUID,
-            @"desiredDeviceUID": desiredDeviceUID
-        }];
+        [self resetAutoRepairSuspicionOnQueue];
+        [self recordOutputChangeOnQueueForObjectID:kAudioObjectSystemObject
+                                         selectors:@[@(kAudioHardwarePropertyDefaultOutputDevice)]];
+        return;
     }
 
     id reportedRunning = [self audioQueueReportedRunningOnQueue];
@@ -435,11 +759,12 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         scheduledFrames = self.scheduledFrames;
     }
 
-    BOOL freshPackets = self.lastPacketEnqueuedAt > 0 && now - self.lastPacketEnqueuedAt < 2.5;
+    BOOL freshPackets = [self hasFreshPacketsOnQueue];
     BOOL queuePretendsRunning = [reportedRunning isKindOfClass:NSNumber.class] && [(NSNumber *)reportedRunning boolValue];
     double sampleRate = self.queueFormat.mSampleRate > 0 ? self.queueFormat.mSampleRate : 0;
     double queuedDuration = sampleRate > 0 ? (double)scheduledFrames / sampleRate : 0;
-    BOOL manualRepairPattern = self.lastManualOutputReconnectAt > 0 && now - self.lastManualOutputReconnectAt < 600.0;
+    BOOL manualRepairRecently = self.lastManualOutputReconnectAt > 0
+        && now - self.lastManualOutputReconnectAt < 180.0;
     double manualRepairAge = self.lastManualOutputReconnectAt > 0 ? now - self.lastManualOutputReconnectAt : -1.0;
 
     NSString *suspicionReason = nil;
@@ -451,7 +776,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         @"currentDeviceUID": currentDeviceUID,
         @"desiredDeviceUID": [self jsonString:desiredDeviceUID],
         @"freshPackets": @(freshPackets),
-        @"manualRepairPattern": @(manualRepairPattern),
+        @"manualRepairRecently": @(manualRepairRecently),
         @"manualRepairAgeSeconds": @(manualRepairAge)
     } mutableCopy];
 
@@ -463,14 +788,26 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         details[@"deviceRunningSomewhere"] = deviceRunning;
     }
 
-    if (self.autoRepairsOutput && self.audioQueueStarted && freshPackets && queuePretendsRunning && scheduledFrames > 0) {
-        if (deviceRunning && !deviceRunning.boolValue) {
+    VBANAutomaticRepairSignal repairSignal = VBANAudioAutomaticRepairSignal(
+        self.autoRepairsOutput,
+        self.audioQueueStarted,
+        freshPackets,
+        queuePretendsRunning,
+        scheduledFrames > 0,
+        deviceRunning != nil,
+        deviceRunning.boolValue,
+        queuedDuration,
+        self.maxQueuedDuration,
+        manualRepairRecently);
+    switch (repairSignal) {
+        case VBANAutomaticRepairSignalDeviceNotRunning:
             suspicionReason = @"device-not-running";
-        } else if (queuedDuration > fmax(0.65, self.maxQueuedDuration * 0.85)) {
+            break;
+        case VBANAutomaticRepairSignalQueueLagging:
             suspicionReason = @"queue-lagging";
-        } else if (manualRepairPattern) {
-            suspicionReason = @"manual-repair-pattern";
-        }
+            break;
+        case VBANAutomaticRepairSignalNone:
+            break;
     }
 
     if (!suspicionReason) {
@@ -500,7 +837,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         return;
     }
 
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime now = VBANMonotonicTime();
     if (now - self.lastIntentionalEngineConfigurationAt < 0.8 || now - self.lastAutomaticOutputRepairAt < 12.0) {
         return;
     }
@@ -517,11 +854,12 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     }
                       includeSnapshot:YES];
     [self resetAutoRepairSuspicionOnQueue];
+    self.outputRecoveryPending = YES;
+    self.lastAudioQueueConfigurationAttemptAt = 0;
     [self teardownAudioQueueOnQueue];
     self.lastLevelReportAt = 0;
-    if (self.queueDropHandler) {
-        self.queueDropHandler();
-    }
+    [self reportQueueDropCount:1];
+    [self beginOutputRestoreDeadlineOnQueue];
 }
 
 - (void)resetAutoRepairSuspicionOnQueue {
@@ -540,40 +878,58 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         scheduledBuffers = self.scheduledBuffers;
         scheduledFrames = self.scheduledFrames;
     }
-    if (scheduledFrames == 0) {
+    id reportedRunning = [self audioQueueReportedRunningOnQueue];
+    VBANOutputRecoveryFacts facts = {
+        .hasAudioQueue = self.audioQueue != NULL,
+        .outputAvailable = YES,
+        .routeChanged = NO,
+        .outputFormatCompatible = YES,
+        .queueStarted = self.audioQueueStarted,
+        .queueRunningKnown = [reportedRunning isKindOfClass:NSNumber.class],
+        .queueRunning = [reportedRunning isKindOfClass:NSNumber.class]
+            && [(NSNumber *)reportedRunning boolValue],
+        .hasPendingAudio = scheduledFrames > 0,
+        .hasFreshInput = [self hasFreshPacketsOnQueue]
+    };
+    if (VBANOutputRecoveryDecisionForFacts(facts) != VBANOutputRecoveryDecisionRestartForPlaybackStall) {
         return;
     }
 
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime now = VBANMonotonicTime();
     if (now - self.lastIntentionalEngineConfigurationAt < 0.35 || now - self.lastOutputRecoveryAt < 0.75) {
         return;
     }
 
-    self.lastOutputRecoveryAt = now;
-    self.lastIntentionalEngineConfigurationAt = now;
-    [self writeDiagnosticEventOnQueue:@"audio-queue-stopped-recovery"
-                              details:@{
+    [self restartAudioQueueOnQueueForDecision:VBANOutputRecoveryDecisionRestartForPlaybackStall
+                                      details:@{
         @"reason": reason ?: @"unknown",
         @"scheduledBuffers": @(scheduledBuffers),
         @"scheduledFrames": @(scheduledFrames),
         @"queuedMilliseconds": self.queueFormat.mSampleRate > 0 ? @(llround(((double)scheduledFrames / self.queueFormat.mSampleRate) * 1000.0)) : (id)[NSNull null],
-        @"reportedRunning": [self audioQueueReportedRunningOnQueue],
+        @"reportedRunning": reportedRunning,
         @"currentDeviceUID": [self audioQueueCurrentDeviceUIDOnQueue],
         @"desiredDeviceUID": [self jsonString:[self desiredOutputDeviceUIDOnQueue]]
-    }
-                      includeSnapshot:YES];
-    [self teardownAudioQueueOnQueue];
-    self.lastLevelReportAt = 0;
-    if (self.queueDropHandler) {
-        self.queueDropHandler();
-    }
+    }];
 }
 
 - (void)setPlaybackProfile:(VBANPlaybackProfile)playbackProfile {
-    _playbackProfile = playbackProfile;
     dispatch_async(self.queue, ^{
+        self->_configuredPlaybackProfile = playbackProfile;
         [self applyPlaybackProfile:playbackProfile];
     });
+}
+
+- (VBANPlaybackProfile)playbackProfile {
+    __block VBANPlaybackProfile profile = VBANPlaybackProfileOptimal;
+    void (^readBlock)(void) = ^{
+        profile = self->_configuredPlaybackProfile;
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        readBlock();
+    } else {
+        dispatch_sync(self.queue, readBlock);
+    }
+    return profile;
 }
 
 - (void)applyPlaybackProfile:(VBANPlaybackProfile)profile {
@@ -612,33 +968,65 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 }
 
 - (void)setOutputVolume:(float)outputVolume {
-    float clamped = fminf(fmaxf(outputVolume, 0.0f), 1.0f);
-    _outputVolume = clamped;
+    float clamped = isfinite(outputVolume)
+        ? fminf(fmaxf(outputVolume, 0.0f), 1.0f)
+        : 0.0f;
     dispatch_async(self.queue, ^{
+        self->_configuredOutputVolume = clamped;
         if (self.audioQueue) {
             AudioQueueSetParameter(self.audioQueue, kAudioQueueParam_Volume, clamped);
         }
     });
 }
 
+- (float)outputVolume {
+    __block float volume = 0.0f;
+    void (^readBlock)(void) = ^{
+        volume = self->_configuredOutputVolume;
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        readBlock();
+    } else {
+        dispatch_sync(self.queue, readBlock);
+    }
+    return volume;
+}
+
 - (void)setLocksOutputDevice:(BOOL)locksOutputDevice {
-    _locksOutputDevice = locksOutputDevice;
     dispatch_async(self.queue, ^{
+        self->_configuredLocksOutputDevice = locksOutputDevice;
         self.lockedOutputDeviceID = locksOutputDevice ? [self currentDefaultOutputDeviceID] : kAudioObjectUnknown;
+        self.lockedOutputDeviceUID = locksOutputDevice
+            ? [self deviceUIDForDeviceID:self.lockedOutputDeviceID]
+            : nil;
+        self.lockedOutputIdentityCaptured = locksOutputDevice;
         [self writeDiagnosticEventOnQueue:@"output-lock-changed"
                                   details:@{
             @"enabled": @(locksOutputDevice),
             @"lockedDevice": [self dictionaryForDeviceID:self.lockedOutputDeviceID]
         }
                           includeSnapshot:YES];
-        [self refreshObservedOutputDevice];
-        [self recoverFromOutputConfigurationChangeOnQueue];
+        [self recordOutputChangeOnQueueForObjectID:kAudioObjectSystemObject
+                                         selectors:@[@(kAudioHardwarePropertyDefaultOutputDevice)]];
     });
 }
 
+- (BOOL)locksOutputDevice {
+    __block BOOL locksOutputDevice = NO;
+    void (^readBlock)(void) = ^{
+        locksOutputDevice = self->_configuredLocksOutputDevice;
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        readBlock();
+    } else {
+        dispatch_sync(self.queue, readBlock);
+    }
+    return locksOutputDevice;
+}
+
 - (void)setAutoRepairsOutput:(BOOL)autoRepairsOutput {
-    _autoRepairsOutput = autoRepairsOutput;
     dispatch_async(self.queue, ^{
+        self->_configuredAutoRepairsOutput = autoRepairsOutput;
         [self resetAutoRepairSuspicionOnQueue];
         [self writeDiagnosticEventOnQueue:@"auto-output-repair-changed"
                                   details:@{@"enabled": @(autoRepairsOutput)}
@@ -646,24 +1034,424 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     });
 }
 
-- (void)coreAudioOutputConfigurationChanged {
+- (BOOL)autoRepairsOutput {
+    __block BOOL autoRepairsOutput = NO;
+    void (^readBlock)(void) = ^{
+        autoRepairsOutput = self->_configuredAutoRepairsOutput;
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        readBlock();
+    } else {
+        dispatch_sync(self.queue, readBlock);
+    }
+    return autoRepairsOutput;
+}
+
+- (void)setLevelReportingEnabled:(BOOL)levelReportingEnabled {
     dispatch_async(self.queue, ^{
-        [self writeDiagnosticEventOnQueue:@"coreaudio-output-configuration-changed"
-                                  details:@{}
-                          includeSnapshot:YES];
-        [self refreshObservedOutputDevice];
-        [self attemptAutomaticOutputRepairOnQueue:@"coreaudio-output-configuration-changed" details:@{}];
-        [self recoverFromOutputConfigurationChangeOnQueue];
+        if (self->_configuredLevelReportingEnabled == levelReportingEnabled) {
+            return;
+        }
+        self->_configuredLevelReportingEnabled = levelReportingEnabled;
+        if (levelReportingEnabled) {
+            self.lastLevelReportAt = 0;
+        }
     });
 }
 
+- (BOOL)levelReportingEnabled {
+    __block BOOL levelReportingEnabled = NO;
+    void (^readBlock)(void) = ^{
+        levelReportingEnabled = self->_configuredLevelReportingEnabled;
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        readBlock();
+    } else {
+        dispatch_sync(self.queue, readBlock);
+    }
+    return levelReportingEnabled;
+}
+
+- (void)coreAudioOutputConfigurationChangedForObjectID:(AudioObjectID)objectID
+                                              selectors:(NSArray<NSNumber *> *)selectors {
+    dispatch_async(self.queue, ^{
+        [self recordOutputChangeOnQueueForObjectID:objectID selectors:selectors];
+    });
+}
+
+- (void)recordOutputChangeOnQueueForObjectID:(AudioObjectID)objectID
+                                    selectors:(NSArray<NSNumber *> *)selectors {
+    CFAbsoluteTime now = VBANMonotonicTime();
+    self.outputNotificationState = VBANOutputNotificationNotice(self.outputNotificationState, now);
+    self.outputChangeTimerGeneration = self.outputNotificationState.generation;
+    [self.pendingOutputObjectIDs addObject:@(objectID)];
+    [self.pendingOutputSelectors addObjectsFromArray:selectors];
+
+    if (!self.outputChangeTimer) {
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.queue);
+        if (!timer) {
+            VBANOutputNotificationState state = self.outputNotificationState;
+            state.burstStartedAt = now - VBANOutputNotificationMaximumInterval;
+            state.lastNotificationAt = now - VBANOutputNotificationQuietInterval;
+            self.outputNotificationState = state;
+            [self evaluatePendingOutputChangesOnQueue];
+            return;
+        }
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            [weakSelf evaluatePendingOutputChangesOnQueue];
+        });
+        self.outputChangeTimer = timer;
+        dispatch_resume(timer);
+    }
+
+    NSTimeInterval delay = VBANOutputNotificationDelay(self.outputNotificationState.burstStartedAt,
+                                                        self.outputNotificationState.lastNotificationAt,
+                                                        now);
+    dispatch_source_set_timer(self.outputChangeTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER,
+                              (uint64_t)(0.02 * NSEC_PER_SEC));
+}
+
+- (void)evaluatePendingOutputChangesOnQueue {
+    VBANOutputNotificationTimerAction action = VBANOutputNotificationTimerDecision(
+        self.outputNotificationState,
+        VBANMonotonicTime(),
+        self.outputChangeTimerGeneration);
+    if (action == VBANOutputNotificationTimerActionIgnore) {
+        return;
+    }
+    if (action == VBANOutputNotificationTimerActionRearm) {
+        NSTimeInterval delay = VBANOutputNotificationDelay(
+            self.outputNotificationState.burstStartedAt,
+            self.outputNotificationState.lastNotificationAt,
+            VBANMonotonicTime());
+        dispatch_source_set_timer(self.outputChangeTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                                  DISPATCH_TIME_FOREVER,
+                                  (uint64_t)(0.02 * NSEC_PER_SEC));
+        return;
+    }
+
+    NSUInteger notificationCount = self.outputNotificationState.notificationCount;
+    NSArray<NSNumber *> *selectors = [[self.pendingOutputSelectors allObjects]
+        sortedArrayUsingSelector:@selector(compare:)];
+    NSArray<NSNumber *> *objectIDs = [[self.pendingOutputObjectIDs allObjects]
+        sortedArrayUsingSelector:@selector(compare:)];
+    [self.pendingOutputSelectors removeAllObjects];
+    [self.pendingOutputObjectIDs removeAllObjects];
+    self.outputNotificationState = VBANOutputNotificationCleared(self.outputNotificationState);
+    if (self.outputChangeTimer) {
+        dispatch_source_set_timer(self.outputChangeTimer,
+                                  DISPATCH_TIME_FOREVER,
+                                  DISPATCH_TIME_FOREVER,
+                                  0);
+    }
+
+    [self evaluateOutputStateOnQueueWithReason:@"coreaudio-notifications"
+                             notificationCount:notificationCount
+                                     selectors:selectors
+                                     objectIDs:objectIDs];
+}
+
+- (void)evaluateOutputStateOnQueueWithReason:(NSString *)reason
+                           notificationCount:(NSUInteger)notificationCount
+                                   selectors:(NSArray<NSNumber *> *)selectors
+                                   objectIDs:(NSArray<NSNumber *> *)objectIDs {
+    [self refreshObservedOutputDevice];
+    VBANOutputDeviceState *desiredState = [self desiredOutputDeviceStateOnQueue];
+
+    NSInteger scheduledBuffers = 0;
+    UInt64 scheduledFrames = 0;
+    @synchronized (self) {
+        scheduledBuffers = self.scheduledBuffers;
+        scheduledFrames = self.scheduledFrames;
+    }
+
+    id reportedRunning = [self audioQueueReportedRunningOnQueue];
+    BOOL queueRunningKnown = [reportedRunning isKindOfClass:NSNumber.class];
+    BOOL queueRunning = queueRunningKnown && [(NSNumber *)reportedRunning boolValue];
+    id queueCurrentDeviceValue = [self audioQueueCurrentDeviceUIDOnQueue];
+    NSString *queueCurrentDeviceUID = [queueCurrentDeviceValue isKindOfClass:NSString.class]
+        ? queueCurrentDeviceValue
+        : nil;
+    NSString *currentDeviceUID = self.activeOutputDeviceUID ?: queueCurrentDeviceUID;
+    BOOL routeChanged = self.audioQueue
+        && desiredState.deviceUID.length
+        && ((self.activeOutputDeviceUID.length
+             && ![desiredState.deviceUID isEqualToString:self.activeOutputDeviceUID])
+            || (queueCurrentDeviceUID.length
+                && ![desiredState.deviceUID isEqualToString:queueCurrentDeviceUID]));
+    BOOL outputFormatCompatible = desiredState.outputChannels > 0
+        && (self.activeOutputChannelCount == 0
+            || desiredState.outputChannels == self.activeOutputChannelCount);
+
+    VBANOutputRecoveryFacts facts = {
+        .hasAudioQueue = self.audioQueue != NULL,
+        .outputAvailable = desiredState.available,
+        .routeChanged = routeChanged,
+        .outputFormatCompatible = outputFormatCompatible,
+        .queueStarted = self.audioQueueStarted,
+        .queueRunningKnown = queueRunningKnown,
+        .queueRunning = queueRunning,
+        .hasPendingAudio = scheduledFrames > 0,
+        .hasFreshInput = [self hasFreshPacketsOnQueue]
+    };
+    VBANOutputRecoveryDecision decision = VBANOutputRecoveryDecisionForFacts(facts);
+
+    NSMutableArray<NSString *> *selectorNames = [NSMutableArray arrayWithCapacity:selectors.count];
+    for (NSNumber *selector in selectors) {
+        [selectorNames addObject:[self outputPropertySelectorName:selector.unsignedIntValue]];
+    }
+    NSDictionary<NSString *, id> *details = @{
+        @"reason": reason ?: @"unknown",
+        @"decision": VBANOutputRecoveryDecisionName(decision),
+        @"notificationCount": @(notificationCount),
+        @"selectors": selectorNames,
+        @"objectIDs": objectIDs ?: @[],
+        @"desiredDevice": [self dictionaryForDeviceID:desiredState.deviceID],
+        @"currentDeviceUID": [self jsonString:currentDeviceUID],
+        @"queueCurrentDeviceUID": [self jsonString:queueCurrentDeviceUID],
+        @"activeOutputChannels": @(self.activeOutputChannelCount),
+        @"queueStarted": @(self.audioQueueStarted),
+        @"queueRunning": reportedRunning,
+        @"scheduledBuffers": @(scheduledBuffers),
+        @"scheduledFrames": @(scheduledFrames),
+        @"freshInput": @(facts.hasFreshInput)
+    };
+    [self writeDiagnosticEventOnQueue:@"output-change-evaluated"
+                              details:details
+                      includeSnapshot:decision != VBANOutputRecoveryDecisionNone];
+
+    if (decision == VBANOutputRecoveryDecisionMarkUnavailable) {
+        BOOL hadAudioQueue = self.audioQueue != NULL;
+        self.outputRecoveryPending = YES;
+        self.outputRecoveryGeneration++;
+        if (hadAudioQueue) {
+            self.lastIntentionalEngineConfigurationAt = VBANMonotonicTime();
+            self.lastAudioQueueConfigurationAttemptAt = 0;
+            [self teardownAudioQueueOnQueue];
+            [self reportQueueDropCount:1];
+        }
+        [self setOutputUnavailableOnQueue:YES deviceName:desiredState.deviceName];
+        return;
+    }
+
+    if (VBANOutputRecoveryDecisionRequiresRestart(decision)) {
+        [self restartAudioQueueOnQueueForDecision:decision details:details];
+        return;
+    }
+
+    if (self.outputUnavailable && desiredState.available && !self.audioQueue) {
+        if (!self.outputRecoveryPermitted) {
+            self.outputRecoveryPending = YES;
+            self.outputRecoveryPermitted = YES;
+            [self writeDiagnosticEventOnQueue:@"output-restore-stabilized"
+                                      details:@{ @"desiredDevice": [self dictionaryForDeviceID:desiredState.deviceID] }
+                              includeSnapshot:NO];
+            [self beginOutputRestoreDeadlineOnQueue];
+        }
+        return;
+    }
+
+    [self completeOutputRestoreIfRunningOnQueue];
+}
+
+- (VBANOutputDeviceState *)desiredOutputDeviceStateOnQueue {
+    VBANOutputDeviceState *state = [[VBANOutputDeviceState alloc] init];
+    state.deviceID = [self desiredOutputDeviceIDOnQueue];
+    NSDictionary<NSString *, id> *device = [self dictionaryForDeviceID:state.deviceID];
+    id uid = device[@"uid"];
+    id name = device[@"name"];
+    id alive = device[@"alive"];
+    id sampleRate = device[@"sampleRate"];
+    state.deviceUID = [uid isKindOfClass:NSString.class] ? uid : nil;
+    state.deviceName = [name isKindOfClass:NSString.class] ? name : nil;
+    state.outputChannels = [device[@"outputChannels"] unsignedIntegerValue];
+    state.alive = [alive isKindOfClass:NSNumber.class] ? alive : nil;
+    state.sampleRate = [sampleRate isKindOfClass:NSNumber.class] ? sampleRate : nil;
+    state.available = state.deviceID != kAudioObjectUnknown
+        && state.outputChannels > 0
+        && (!state.alive || state.alive.boolValue);
+    return state;
+}
+
+- (void)restartAudioQueueOnQueueForDecision:(VBANOutputRecoveryDecision)decision
+                                    details:(NSDictionary<NSString *, id> *)details {
+    if (!self.audioQueue) {
+        return;
+    }
+
+    self.lastOutputRecoveryAt = VBANMonotonicTime();
+    self.lastIntentionalEngineConfigurationAt = self.lastOutputRecoveryAt;
+    self.outputRecoveryPending = YES;
+    [self writeDiagnosticEventOnQueue:@"controlled-output-restart"
+                              details:@{
+        @"decision": VBANOutputRecoveryDecisionName(decision),
+        @"evaluation": details ?: @{}
+    }
+                      includeSnapshot:YES];
+    self.lastAudioQueueConfigurationAttemptAt = 0;
+    [self teardownAudioQueueOnQueue];
+    self.lastLevelReportAt = 0;
+    [self reportQueueDropCount:1];
+    [self beginOutputRestoreDeadlineOnQueue];
+}
+
+- (void)setOutputUnavailableOnQueue:(BOOL)unavailable deviceName:(NSString *)deviceName {
+    NSString *normalizedName = deviceName.length ? deviceName : @"Default Output";
+    BOOL changed = self.outputUnavailable != unavailable
+        || (unavailable && ![self.outputUnavailableDeviceName isEqualToString:normalizedName]);
+    self.outputUnavailable = unavailable;
+    self.outputUnavailableDeviceName = unavailable ? normalizedName : nil;
+    self.outputRecoveryPermitted = NO;
+    void (^handler)(BOOL, NSString *) = self.outputAvailabilityHandler;
+    if (changed && handler) {
+        handler(!unavailable, unavailable ? normalizedName : nil);
+    }
+}
+
+- (void)beginOutputRestoreDeadlineOnQueue {
+    self.outputRecoveryGeneration++;
+    NSUInteger generation = self.outputRecoveryGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(VBANOutputRestoreDeadline * NSEC_PER_SEC)),
+                   self.queue, ^{
+        if (generation != self.outputRecoveryGeneration || !self.outputRecoveryPending) {
+            return;
+        }
+        [self completeOutputRestoreIfRunningOnQueue];
+        if (!self.outputRecoveryPending || ![self hasFreshPacketsOnQueue]) {
+            return;
+        }
+        if (!self.audioQueue || ![self hasEnoughAudioToStartOnQueue]) {
+            return;
+        }
+        self.lastAudioQueueConfigurationAttemptAt = 0;
+        [self teardownAudioQueueOnQueue];
+        VBANOutputDeviceState *state = [self desiredOutputDeviceStateOnQueue];
+        [self setOutputUnavailableOnQueue:YES deviceName:state.deviceName];
+        self.outputRecoveryPermitted =
+            VBANOutputRestoreFailurePermitsPacketRetry(state.available);
+    });
+}
+
+- (void)completeOutputRestoreIfRunningOnQueue {
+    id reportedRunning = [self audioQueueReportedRunningOnQueue];
+    VBANOutputDeviceState *desiredState = [self desiredOutputDeviceStateOnQueue];
+    id currentDeviceValue = [self audioQueueCurrentDeviceUIDOnQueue];
+    NSString *currentDeviceUID = [currentDeviceValue isKindOfClass:NSString.class]
+        ? currentDeviceValue
+        : nil;
+    BOOL routeMatches = desiredState.deviceUID.length
+        && [self.activeOutputDeviceUID isEqualToString:desiredState.deviceUID]
+        && [currentDeviceUID isEqualToString:desiredState.deviceUID]
+        && (self.activeOutputChannelCount == 0
+            || self.activeOutputChannelCount == desiredState.outputChannels);
+    VBANAudioQueueCallbackContext *context = self.audioQueueCallbackContext
+        ? (__bridge VBANAudioQueueCallbackContext *)self.audioQueueCallbackContext
+        : nil;
+    BOOL queueGenerationCurrent = context
+        && context.generation == self.audioQueueGeneration;
+    BOOL running = VBANOutputShouldClearAvailabilityAlert(self.audioQueue != NULL,
+                                                           [reportedRunning isKindOfClass:NSNumber.class],
+                                                           [reportedRunning isKindOfClass:NSNumber.class]
+                                                               && [(NSNumber *)reportedRunning boolValue],
+                                                           desiredState.available,
+                                                           routeMatches,
+                                                           queueGenerationCurrent);
+    if (!running) {
+        return;
+    }
+    self.outputRecoveryPending = NO;
+    self.outputRecoveryGeneration++;
+    [self setOutputUnavailableOnQueue:NO deviceName:nil];
+    [self notifyPlaybackStartedOnQueueIfNeeded];
+}
+
+- (void)notifyPlaybackStartedOnQueueIfNeeded {
+    NSUInteger generation = self.audioQueueGeneration;
+    if (!VBANAudioPlaybackNotificationNeeded(self.audioQueue != NULL,
+                                             self.audioQueueStarted,
+                                             generation,
+                                             self.notifiedPlaybackGeneration)) {
+        return;
+    }
+    void (^handler)(void) = self.playbackStartedHandler;
+    if (!handler) {
+        return;
+    }
+    self.notifiedPlaybackGeneration = generation;
+    handler();
+}
+
+- (void)reportPlaybackErrorOnQueue:(NSString *)message {
+    self.notifiedPlaybackGeneration = 0;
+    void (^handler)(NSString *) = self.errorHandler;
+    if (handler) {
+        handler(message ?: @"Audio output error");
+    }
+}
+
+- (BOOL)hasFreshPacketsOnQueue {
+    return self.lastPacketEnqueuedAt > 0
+        && VBANPacketAgeIsFresh(VBANMonotonicTime() - self.lastPacketEnqueuedAt);
+}
+
+- (BOOL)hasEnoughAudioToStartOnQueue {
+    NSInteger scheduledBuffers = 0;
+    UInt64 scheduledFrames = 0;
+    @synchronized (self) {
+        scheduledBuffers = self.scheduledBuffers;
+        scheduledFrames = self.scheduledFrames;
+    }
+    return scheduledFrames > 0
+        && (self.audioQueueStarted || scheduledBuffers >= self.startBufferCount);
+}
+
+- (NSString *)outputPropertySelectorName:(AudioObjectPropertySelector)selector {
+    switch (selector) {
+        case kAudioHardwarePropertyDefaultOutputDevice:
+            return @"default-output-device";
+        case kAudioHardwarePropertyDefaultSystemOutputDevice:
+            return @"default-system-output-device";
+        case kAudioHardwarePropertyDevices:
+            return @"audio-device-list";
+        case kAudioDevicePropertyNominalSampleRate:
+            return @"nominal-sample-rate";
+        case kAudioDevicePropertyStreamConfiguration:
+            return @"stream-configuration";
+        case kAudioDevicePropertyDeviceIsAlive:
+            return @"device-is-alive";
+        case kAudioDevicePropertyDeviceIsRunningSomewhere:
+            return @"device-is-running-somewhere";
+        case kAudioDevicePropertyHogMode:
+            return @"hog-mode";
+        default:
+            return [NSString stringWithFormat:@"0x%08x", (unsigned int)selector];
+    }
+}
+
 - (void)reset {
-    dispatch_sync(self.queue, ^{
+    void (^resetBlock)(void) = ^{
         [self writeDiagnosticEventOnQueue:@"audio-reset" details:@{} includeSnapshot:YES];
-        self.lastIntentionalEngineConfigurationAt = CFAbsoluteTimeGetCurrent();
+        self.lastIntentionalEngineConfigurationAt = VBANMonotonicTime();
+        self.outputRecoveryPending = NO;
+        self.outputRecoveryGeneration++;
+        self.lastAudioQueueConfigurationAttemptAt = 0;
+        [self setOutputUnavailableOnQueue:NO deviceName:nil];
         [self teardownAudioQueueOnQueue];
         self.lastLevelReportAt = 0;
-    });
+    };
+    if (dispatch_get_specific(VBANAudioQueueSpecificKey) == (__bridge void *)self) {
+        resetBlock();
+    } else {
+        dispatch_sync(self.queue, resetBlock);
+    }
+    if (dispatch_get_specific(VBANDiagnosticQueueSpecificKey) != (__bridge void *)self) {
+        dispatch_sync(self.diagnosticQueue, ^{});
+    }
 }
 
 - (void)reconnectOutput {
@@ -671,139 +1459,226 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         [self writeDiagnosticEventOnQueue:@"manual-output-reconnect"
                                   details:@{@"hadAudioQueue": @(self.audioQueue != NULL)}
                           includeSnapshot:YES];
-        self.lastManualOutputReconnectAt = CFAbsoluteTimeGetCurrent();
-        self.lastIntentionalEngineConfigurationAt = CFAbsoluteTimeGetCurrent();
+        self.lastManualOutputReconnectAt = VBANMonotonicTime();
+        self.lastIntentionalEngineConfigurationAt = VBANMonotonicTime();
         [self resetAutoRepairSuspicionOnQueue];
+        self.outputRecoveryPending = YES;
+        self.outputRecoveryPermitted = YES;
+        self.lastAudioQueueConfigurationAttemptAt = 0;
         [self teardownAudioQueueOnQueue];
         self.lastLevelReportAt = 0;
+        [self beginOutputRestoreDeadlineOnQueue];
     });
 }
 
-- (void)recoverFromOutputConfigurationChangeOnQueue {
-    if (!self.audioQueue) {
+- (void)enqueuePacket:(VBANPacket *)packet {
+    NSUInteger packetBytes = packet.payload.length;
+    BOOL accepted = NO;
+    @synchronized (self.ingressLock) {
+        accepted = VBANAudioIngressCanAcceptPacket(self.pendingPacketTasks,
+                                                   self.pendingPacketBytes,
+                                                   packetBytes,
+                                                   VBANAudioIngressMaximumPendingTasks,
+                                                   VBANAudioIngressMaximumPendingBytes);
+        if (accepted) {
+            self.pendingPacketTasks++;
+            self.pendingPacketBytes += packetBytes;
+        }
+    }
+    if (!accepted) {
+        [self reportQueueDropCount:1];
         return;
     }
 
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (now - self.lastIntentionalEngineConfigurationAt < 0.35 || now - self.lastOutputRecoveryAt < 0.50) {
-        return;
-    }
+    dispatch_async(self.queue, ^{
+        @try {
+            self.lastPacketEnqueuedAt = VBANMonotonicTime();
+            if (self.outputUnavailable && !self.outputRecoveryPermitted) {
+                return;
+            }
+            if (![self shouldAttemptAudioQueueConfigurationForPacketOnQueue:packet]) {
+                [self reportQueueDropCount:1];
+                return;
+            }
+            NSError *error = nil;
+            void (^levelHandler)(double) = self.levelHandler;
+            BOOL shouldReportLevel = self->_configuredLevelReportingEnabled && levelHandler != nil;
+            double peak = 0;
+            NSData *audioData = [self audioDataFromPacket:packet
+                                                    peak:shouldReportLevel ? &peak : NULL
+                                                   error:&error];
+            if (!audioData) {
+                [self reportPlaybackErrorOnQueue:
+                    error.localizedDescription ?: @"Cannot decode audio packet"];
+                return;
+            }
 
-    self.lastOutputRecoveryAt = now;
-    self.lastIntentionalEngineConfigurationAt = CFAbsoluteTimeGetCurrent();
-    [self writeDiagnosticEventOnQueue:@"audio-output-recovery"
-                              details:@{}
-                      includeSnapshot:YES];
-    [self teardownAudioQueueOnQueue];
-    self.lastLevelReportAt = 0;
+            if (![self ensureAudioQueueForPacket:packet error:&error]) {
+                [self reportPlaybackErrorOnQueue:
+                    error.localizedDescription ?: @"Cannot start audio output"];
+                return;
+            }
+
+            NSInteger queuedBuffers = 0;
+            UInt64 queuedFrames = 0;
+            @synchronized (self) {
+                queuedBuffers = self.scheduledBuffers;
+                queuedFrames = self.scheduledFrames;
+            }
+
+            double sampleRate = self.queueFormat.mSampleRate > 0 ? self.queueFormat.mSampleRate : packet.sampleRate;
+            double queuedDuration = sampleRate > 0 ? (double)queuedFrames / sampleRate : 0;
+            BOOL exceedsDuration = self.maxQueuedDuration > 0 && queuedDuration >= self.maxQueuedDuration;
+            BOOL exceedsBuffers = self.maxQueuedBuffers > 0 && queuedBuffers >= self.maxQueuedBuffers;
+            if (exceedsDuration || exceedsBuffers) {
+                [self writeDiagnosticEventOnQueue:@"audio-queue-buffer-pressure"
+                                          details:@{
+                    @"scheduledBuffers": @(queuedBuffers),
+                    @"maxQueuedBuffers": @(self.maxQueuedBuffers),
+                    @"scheduledFrames": @(queuedFrames),
+                    @"queuedMilliseconds": @(llround(queuedDuration * 1000.0)),
+                    @"maxQueuedMilliseconds": @(llround(self.maxQueuedDuration * 1000.0)),
+                    @"packetFrames": @(packet.sampleCount),
+                    @"packetMilliseconds": @(llround((packet.sampleRate > 0 ? packet.sampleCount / packet.sampleRate : 0) * 1000.0)),
+                    @"reportedRunning": [self audioQueueReportedRunningOnQueue],
+                    @"currentDeviceUID": [self audioQueueCurrentDeviceUIDOnQueue],
+                    @"reason": exceedsDuration ? @"duration" : @"buffer-count"
+                }
+                                  includeSnapshot:YES];
+                if (![self resetAudioQueueBuffersOnQueue]) {
+                    return;
+                }
+                [self reportQueueDropCount:1];
+            }
+
+            AudioQueueBufferRef queueBuffer = NULL;
+            OSStatus allocateStatus = AudioQueueAllocateBuffer(self.audioQueue,
+                                                              (UInt32)audioData.length,
+                                                              &queueBuffer);
+            if (allocateStatus != noErr || !queueBuffer) {
+                [self reportPlaybackErrorOnQueue:
+                    [self messageForAudioStatus:allocateStatus
+                                      fallback:@"Cannot allocate audio output buffer"]];
+                [self writeDiagnosticEventOnQueue:@"audio-queue-allocate-error"
+                                          details:@{@"status": @(allocateStatus)}
+                                  includeSnapshot:YES];
+                return;
+            }
+
+            memcpy(queueBuffer->mAudioData, audioData.bytes, audioData.length);
+            queueBuffer->mAudioDataByteSize = (UInt32)audioData.length;
+            queueBuffer->mUserData = (void *)(uintptr_t)packet.sampleCount;
+
+            AudioQueueRef enqueueQueue = self.audioQueue;
+            NSUInteger enqueueGeneration = self.audioQueueGeneration;
+            @synchronized (self) {
+                self.scheduledBuffers++;
+                self.scheduledFrames += packet.sampleCount;
+            }
+
+            OSStatus enqueueStatus = AudioQueueEnqueueBuffer(enqueueQueue, queueBuffer, 0, NULL);
+            if (enqueueStatus != noErr) {
+                @synchronized (self) {
+                    if (self.audioQueue == enqueueQueue
+                        && self.audioQueueGeneration == enqueueGeneration) {
+                        self.scheduledBuffers = MAX(0, self.scheduledBuffers - 1);
+                        self.scheduledFrames = self.scheduledFrames > packet.sampleCount
+                            ? self.scheduledFrames - packet.sampleCount
+                            : 0;
+                    }
+                }
+                AudioQueueFreeBuffer(enqueueQueue, queueBuffer);
+                [self reportPlaybackErrorOnQueue:
+                    [self messageForAudioStatus:enqueueStatus
+                                      fallback:@"Cannot enqueue audio output buffer"]];
+                [self writeDiagnosticEventOnQueue:@"audio-queue-enqueue-error"
+                                          details:@{@"status": @(enqueueStatus)}
+                                  includeSnapshot:YES];
+                return;
+            }
+
+            @synchronized (self) {
+                queuedBuffers = self.scheduledBuffers;
+            }
+            if (!self.audioQueueStarted && queuedBuffers >= self.startBufferCount) {
+                if (self.outputRecoveryPending) {
+                    [self beginOutputRestoreDeadlineOnQueue];
+                }
+                OSStatus startStatus = AudioQueueStart(self.audioQueue, NULL);
+                if (startStatus == noErr) {
+                    self.audioQueueStarted = YES;
+                    [self writeDiagnosticEventOnQueue:@"audio-queue-started"
+                                              details:@{@"scheduledBuffers": @(queuedBuffers)}
+                                      includeSnapshot:NO];
+                } else {
+                    [self reportPlaybackErrorOnQueue:
+                        [self messageForAudioStatus:startStatus
+                                          fallback:@"Cannot start audio output"]];
+                    [self writeDiagnosticEventOnQueue:@"audio-queue-start-error"
+                                              details:@{@"status": @(startStatus)}
+                                      includeSnapshot:YES];
+                }
+            }
+
+            // Usually a no-op after the first successful start. A playback
+            // error resets the marker, so the next successful enqueue clears
+            // the stale UI error without rebuilding the queue.
+            [self notifyPlaybackStartedOnQueueIfNeeded];
+
+            CFAbsoluteTime now = VBANMonotonicTime();
+            if (shouldReportLevel
+                && now - self.lastLevelReportAt >= self.levelReportInterval) {
+                self.lastLevelReportAt = now;
+                levelHandler(MIN(peak, 1.0));
+            }
+        } @finally {
+            [self finishPendingPacketTaskWithBytes:packetBytes];
+        }
+    });
 }
 
-- (void)enqueuePacket:(VBANPacket *)packet {
+- (BOOL)shouldAttemptAudioQueueConfigurationForPacketOnQueue:(VBANPacket *)packet {
+    BOOL configurationRequired = !self.audioQueue
+        || !self.hasQueueFormat
+        || self.queueFormat.mSampleRate != packet.sampleRate
+        || self.queueFormat.mChannelsPerFrame != packet.channelCount;
+    if (!configurationRequired) {
+        return YES;
+    }
+
+    CFAbsoluteTime now = VBANMonotonicTime();
+    double secondsSinceLastAttempt = self.lastAudioQueueConfigurationAttemptAt > 0
+        ? now - self.lastAudioQueueConfigurationAttemptAt
+        : -1.0;
+    if (!VBANAudioQueueConfigurationAttemptAllowed(YES, secondsSinceLastAttempt)) {
+        return NO;
+    }
+    self.lastAudioQueueConfigurationAttemptAt = now;
+    return YES;
+}
+
+- (void)finishPendingPacketTaskWithBytes:(NSUInteger)packetBytes {
+    @synchronized (self.ingressLock) {
+        self.pendingPacketTasks = self.pendingPacketTasks > 0
+            ? self.pendingPacketTasks - 1
+            : 0;
+        self.pendingPacketBytes = self.pendingPacketBytes > packetBytes
+            ? self.pendingPacketBytes - packetBytes
+            : 0;
+    }
+}
+
+- (void)reportQueueDropCount:(NSUInteger)count {
+    VBANCountCoalescer *coalescer = self.queueDropCoalescer;
+    if (![coalescer recordCount:count]) {
+        return;
+    }
+
     dispatch_async(self.queue, ^{
-        self.lastPacketEnqueuedAt = CFAbsoluteTimeGetCurrent();
-        NSError *error = nil;
-        double peak = 0;
-        NSData *audioData = [self audioDataFromPacket:packet peak:&peak error:&error];
-        if (!audioData) {
-            if (self.errorHandler) {
-                self.errorHandler(error.localizedDescription ?: @"Cannot decode audio packet");
-            }
-            return;
-        }
-
-        if (![self ensureAudioQueueForPacket:packet error:&error]) {
-            if (self.errorHandler) {
-                self.errorHandler(error.localizedDescription ?: @"Cannot start audio output");
-            }
-            return;
-        }
-
-        NSInteger queuedBuffers = 0;
-        UInt64 queuedFrames = 0;
-        @synchronized (self) {
-            queuedBuffers = self.scheduledBuffers;
-            queuedFrames = self.scheduledFrames;
-        }
-
-        double sampleRate = self.queueFormat.mSampleRate > 0 ? self.queueFormat.mSampleRate : packet.sampleRate;
-        double queuedDuration = sampleRate > 0 ? (double)queuedFrames / sampleRate : 0;
-        BOOL exceedsDuration = self.maxQueuedDuration > 0 && queuedDuration >= self.maxQueuedDuration;
-        BOOL exceedsBuffers = self.maxQueuedBuffers > 0 && queuedBuffers >= self.maxQueuedBuffers;
-        if (exceedsDuration || exceedsBuffers) {
-            [self writeDiagnosticEventOnQueue:@"audio-queue-buffer-pressure"
-                                      details:@{
-                @"scheduledBuffers": @(queuedBuffers),
-                @"maxQueuedBuffers": @(self.maxQueuedBuffers),
-                @"scheduledFrames": @(queuedFrames),
-                @"queuedMilliseconds": @(llround(queuedDuration * 1000.0)),
-                @"maxQueuedMilliseconds": @(llround(self.maxQueuedDuration * 1000.0)),
-                @"packetFrames": @(packet.sampleCount),
-                @"packetMilliseconds": @(llround((packet.sampleRate > 0 ? packet.sampleCount / packet.sampleRate : 0) * 1000.0)),
-                @"reportedRunning": [self audioQueueReportedRunningOnQueue],
-                @"currentDeviceUID": [self audioQueueCurrentDeviceUIDOnQueue],
-                @"reason": exceedsDuration ? @"duration" : @"buffer-count"
-            }
-                              includeSnapshot:YES];
-            [self resetAudioQueueBuffersOnQueue];
-            if (self.queueDropHandler) {
-                self.queueDropHandler();
-            }
-        }
-
-        AudioQueueBufferRef queueBuffer = NULL;
-        OSStatus allocateStatus = AudioQueueAllocateBuffer(self.audioQueue,
-                                                          (UInt32)audioData.length,
-                                                          &queueBuffer);
-        if (allocateStatus != noErr || !queueBuffer) {
-            if (self.errorHandler) {
-                self.errorHandler([self messageForAudioStatus:allocateStatus fallback:@"Cannot allocate audio output buffer"]);
-            }
-            [self writeDiagnosticEventOnQueue:@"audio-queue-allocate-error"
-                                      details:@{@"status": @(allocateStatus)}
-                              includeSnapshot:YES];
-            return;
-        }
-
-        memcpy(queueBuffer->mAudioData, audioData.bytes, audioData.length);
-        queueBuffer->mAudioDataByteSize = (UInt32)audioData.length;
-        queueBuffer->mUserData = (void *)(uintptr_t)packet.sampleCount;
-
-        OSStatus enqueueStatus = AudioQueueEnqueueBuffer(self.audioQueue, queueBuffer, 0, NULL);
-        if (enqueueStatus != noErr) {
-            AudioQueueFreeBuffer(self.audioQueue, queueBuffer);
-            if (self.errorHandler) {
-                self.errorHandler([self messageForAudioStatus:enqueueStatus fallback:@"Cannot enqueue audio output buffer"]);
-            }
-            [self writeDiagnosticEventOnQueue:@"audio-queue-enqueue-error"
-                                      details:@{@"status": @(enqueueStatus)}
-                              includeSnapshot:YES];
-            return;
-        }
-
-        @synchronized (self) {
-            self.scheduledBuffers++;
-            self.scheduledFrames += packet.sampleCount;
-            queuedBuffers = self.scheduledBuffers;
-        }
-        if (!self.audioQueueStarted && queuedBuffers >= self.startBufferCount) {
-            OSStatus startStatus = AudioQueueStart(self.audioQueue, NULL);
-            if (startStatus == noErr) {
-                self.audioQueueStarted = YES;
-                [self writeDiagnosticEventOnQueue:@"audio-queue-started"
-                                          details:@{@"scheduledBuffers": @(queuedBuffers)}
-                                  includeSnapshot:NO];
-            } else if (self.errorHandler) {
-                self.errorHandler([self messageForAudioStatus:startStatus fallback:@"Cannot start audio output"]);
-                [self writeDiagnosticEventOnQueue:@"audio-queue-start-error"
-                                          details:@{@"status": @(startStatus)}
-                                  includeSnapshot:YES];
-            }
-        }
-
-        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-        if (self.levelHandler && now - self.lastLevelReportAt >= self.levelReportInterval) {
-            self.lastLevelReportAt = now;
-            self.levelHandler(MIN(peak, 1.0));
+        NSUInteger coalescedCount = [coalescer drainCount];
+        void (^handler)(NSUInteger) = self.queueDropHandler;
+        if (coalescedCount > 0 && handler) {
+            handler(coalescedCount);
         }
     });
 }
@@ -814,7 +1689,18 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         || self.queueFormat.mChannelsPerFrame != packet.channelCount;
 
     if (formatChanged) {
-        self.lastIntentionalEngineConfigurationAt = CFAbsoluteTimeGetCurrent();
+        VBANOutputDeviceState *desiredState = [self desiredOutputDeviceStateOnQueue];
+        if (!desiredState.available) {
+            self.outputRecoveryPending = YES;
+            [self setOutputUnavailableOnQueue:YES deviceName:desiredState.deviceName];
+            if (error) {
+                *error = [NSError errorWithDomain:@"local.codex.vban.audio"
+                                             code:3
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Output device is unavailable"}];
+            }
+            return NO;
+        }
+        self.lastIntentionalEngineConfigurationAt = VBANMonotonicTime();
         [self teardownAudioQueueOnQueue];
 
         AudioStreamBasicDescription format = {0};
@@ -828,14 +1714,26 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         format.mBitsPerChannel = 32;
 
         AudioQueueRef outputQueue = NULL;
+        NSUInteger queueGeneration = 0;
+        @synchronized (self) {
+            queueGeneration = ++self.audioQueueGeneration;
+        }
+        VBANAudioQueueCallbackContext *callbackContext = [[VBANAudioQueueCallbackContext alloc] init];
+        callbackContext.player = self;
+        callbackContext.generation = queueGeneration;
+        void *retainedCallbackContext = (__bridge_retained void *)callbackContext;
         OSStatus status = AudioQueueNewOutput(&format,
                                               VBANAudioQueueOutputCompleted,
-                                              (__bridge void *)self,
+                                              retainedCallbackContext,
                                               NULL,
                                               NULL,
                                               0,
                                               &outputQueue);
         if (status != noErr || !outputQueue) {
+            if (outputQueue) {
+                AudioQueueDispose(outputQueue, true);
+            }
+            CFRelease(retainedCallbackContext);
             if (error) {
                 *error = [self errorForAudioStatus:status fallback:@"Cannot create audio output queue"];
             }
@@ -845,21 +1743,38 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
             return NO;
         }
 
-        self.audioQueue = outputQueue;
+        @synchronized (self) {
+            self.audioQueue = outputQueue;
+            self.audioQueueCallbackContext = retainedCallbackContext;
+        }
         self.queueFormat = format;
         self.hasQueueFormat = YES;
         self.audioQueueStarted = NO;
+        self.notifiedPlaybackGeneration = 0;
         OSStatus runningListenerStatus = AudioQueueAddPropertyListener(self.audioQueue,
                                                                        kAudioQueueProperty_IsRunning,
                                                                        VBANAudioQueueIsRunningChanged,
-                                                                       (__bridge void *)self);
+                                                                       retainedCallbackContext);
         self.hasAudioQueueRunningListener = runningListenerStatus == noErr;
         @synchronized (self) {
             self.scheduledBuffers = 0;
             self.scheduledFrames = 0;
         }
 
-        [self applyOutputDevicePolicyOnQueue];
+        if (![self applyOutputDevicePolicyOnQueue]) {
+            [self teardownAudioQueueOnQueue];
+            VBANOutputDeviceState *retryState = [self desiredOutputDeviceStateOnQueue];
+            self.outputRecoveryPending = YES;
+            [self setOutputUnavailableOnQueue:YES deviceName:retryState.deviceName];
+            self.outputRecoveryPermitted =
+                VBANOutputRestoreFailurePermitsPacketRetry(retryState.available);
+            if (error) {
+                *error = [NSError errorWithDomain:@"local.codex.vban.audio"
+                                             code:4
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Cannot select the output device"}];
+            }
+            return NO;
+        }
         [self startAudioQueueWatchdogOnQueue];
         AudioQueueSetParameter(self.audioQueue, kAudioQueueParam_Volume, self.outputVolume);
         [self writeDiagnosticEventOnQueue:@"audio-queue-created"
@@ -900,7 +1815,9 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
             NSUInteger sampleOffset = frameOffset + channel * VBANBytesPerSample(packet.dataType);
             float sample = [self decodeSample:bytes offset:sampleOffset type:packet.dataType];
             output[frame * packet.channelCount + channel] = sample;
-            maxPeak = fmaxf(maxPeak, fabsf(sample));
+            if (peak) {
+                maxPeak = fmaxf(maxPeak, fabsf(sample));
+            }
         }
     }
 
@@ -910,17 +1827,17 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     return data;
 }
 
-- (void)resetAudioQueueBuffersOnQueue {
+- (BOOL)resetAudioQueueBuffersOnQueue {
     if (!self.audioQueue) {
         @synchronized (self) {
             self.scheduledBuffers = 0;
             self.scheduledFrames = 0;
         }
         self.audioQueueStarted = NO;
-        return;
+        return NO;
     }
 
-    self.lastIntentionalEngineConfigurationAt = CFAbsoluteTimeGetCurrent();
+    self.lastIntentionalEngineConfigurationAt = VBANMonotonicTime();
     AudioQueueStop(self.audioQueue, true);
     AudioQueueReset(self.audioQueue);
     @synchronized (self) {
@@ -928,32 +1845,53 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
         self.scheduledFrames = 0;
     }
     self.audioQueueStarted = NO;
+    self.notifiedPlaybackGeneration = 0;
     AudioQueueSetParameter(self.audioQueue, kAudioQueueParam_Volume, self.outputVolume);
-    [self applyOutputDevicePolicyOnQueue];
+    if (![self applyOutputDevicePolicyOnQueue]) {
+        [self teardownAudioQueueOnQueue];
+        VBANOutputDeviceState *state = [self desiredOutputDeviceStateOnQueue];
+        self.outputRecoveryPending = YES;
+        [self setOutputUnavailableOnQueue:YES deviceName:state.deviceName];
+        self.outputRecoveryPermitted =
+            VBANOutputRestoreFailurePermitsPacketRetry(state.available);
+        return NO;
+    }
+    return YES;
 }
 
 - (void)teardownAudioQueueOnQueue {
     [self stopAudioQueueWatchdogOnQueue];
-    if (self.audioQueue) {
-        if (self.hasAudioQueueRunningListener) {
-            AudioQueueRemovePropertyListener(self.audioQueue,
-                                             kAudioQueueProperty_IsRunning,
-                                             VBANAudioQueueIsRunningChanged,
-                                             (__bridge void *)self);
-            self.hasAudioQueueRunningListener = NO;
-        }
-        AudioQueueStop(self.audioQueue, true);
-        AudioQueueDispose(self.audioQueue, true);
-        self.audioQueue = NULL;
-    }
-    self.hasAudioQueueRunningListener = NO;
-
-    self.hasQueueFormat = NO;
-    self.audioQueueStarted = NO;
+    AudioQueueRef queue = NULL;
+    void *callbackContext = NULL;
+    BOOL hadRunningListener = NO;
     @synchronized (self) {
+        queue = self.audioQueue;
+        callbackContext = self.audioQueueCallbackContext;
+        hadRunningListener = self.hasAudioQueueRunningListener;
+        self.audioQueue = NULL;
+        self.audioQueueCallbackContext = NULL;
+        self.hasAudioQueueRunningListener = NO;
+        self.audioQueueGeneration++;
         self.scheduledBuffers = 0;
         self.scheduledFrames = 0;
     }
+    if (queue) {
+        if (hadRunningListener) {
+            AudioQueueRemovePropertyListener(queue,
+                                             kAudioQueueProperty_IsRunning,
+                                             VBANAudioQueueIsRunningChanged,
+                                             callbackContext);
+        }
+        AudioQueueStop(queue, true);
+        AudioQueueDispose(queue, true);
+    }
+    if (callbackContext) {
+        CFRelease(callbackContext);
+    }
+
+    self.hasQueueFormat = NO;
+    self.audioQueueStarted = NO;
+    self.notifiedPlaybackGeneration = 0;
     memset(&_queueFormat, 0, sizeof(_queueFormat));
 }
 
@@ -971,6 +1909,10 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
 }
 
 - (NSString *)diagnosticLogPath {
+    NSString *overridePath = NSProcessInfo.processInfo.environment[@"VBAN_DIAGNOSTIC_LOG_PATH"];
+    if (overridePath.length) {
+        return overridePath.stringByExpandingTildeInPath;
+    }
     NSArray<NSString *> *libraryPaths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory,
                                                                             NSUserDomainMask,
                                                                             YES);
@@ -1021,15 +1963,115 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
                               withIntermediateDirectories:YES
                                                attributes:nil
                                                     error:nil];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        [line writeToFile:path atomically:YES];
+    NSString *lockPath = [path stringByAppendingString:@".lock"];
+    int lockFD = open(lockPath.fileSystemRepresentation, O_CREAT | O_RDWR, 0644);
+    if (lockFD < 0) {
+        return;
+    }
+    BOOL acquiredLock = NO;
+    for (NSUInteger attempt = 0; attempt < 20; attempt++) {
+        if (flock(lockFD, LOCK_EX | LOCK_NB) == 0) {
+            acquiredLock = YES;
+            break;
+        }
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            break;
+        }
+        usleep(5000);
+    }
+    if (!acquiredLock) {
+        close(lockFD);
+        return;
+    }
+    [self rotateDiagnosticLogIfNeededForIncomingBytes:line.length];
+    int logFD = open(path.fileSystemRepresentation, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if (logFD >= 0) {
+        const uint8_t *bytes = line.bytes;
+        NSUInteger remaining = line.length;
+        while (remaining > 0) {
+            ssize_t written = write(logFD, bytes, remaining);
+            if (written > 0) {
+                bytes += written;
+                remaining -= (NSUInteger)written;
+            } else if (errno != EINTR) {
+                break;
+            }
+        }
+        close(logFD);
+    }
+    flock(lockFD, LOCK_UN);
+    close(lockFD);
+}
+
+- (void)rotateDiagnosticLogIfNeededForIncomingBytes:(NSUInteger)incomingBytes {
+    NSString *path = self.diagnosticLogPath;
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSNumber *fileSize = [[fileManager attributesOfItemAtPath:path error:nil]
+        objectForKey:NSFileSize];
+    if (!fileSize || fileSize.unsignedLongLongValue + incomingBytes <= VBANDiagnosticLogMaximumBytes) {
         return;
     }
 
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-    [handle seekToEndOfFile];
-    [handle writeData:line];
+    NSString *oldestBackup = [path stringByAppendingFormat:@".%lu",
+        (unsigned long)VBANDiagnosticLogBackupCount];
+    if ([fileManager fileExistsAtPath:oldestBackup]
+        && ![fileManager removeItemAtPath:oldestBackup error:nil]) {
+        return;
+    }
+    for (NSUInteger index = VBANDiagnosticLogBackupCount; index > 1; index--) {
+        NSString *source = [path stringByAppendingFormat:@".%lu", (unsigned long)(index - 1)];
+        NSString *destination = [path stringByAppendingFormat:@".%lu", (unsigned long)index];
+        if ([fileManager fileExistsAtPath:source]
+            && ![fileManager moveItemAtPath:source toPath:destination error:nil]) {
+            return;
+        }
+    }
+
+    NSString *newestBackup = [path stringByAppendingString:@".1"];
+    if (fileSize.unsignedLongLongValue <= VBANDiagnosticLogMaximumBytes) {
+        [fileManager moveItemAtPath:path toPath:newestBackup error:nil];
+    } else {
+        BOOL copied = [self copyTailOfLogAtPath:path
+                                         toPath:newestBackup
+                                       maxBytes:VBANDiagnosticLogMaximumBytes];
+        if (copied) {
+            [fileManager removeItemAtPath:path error:nil];
+        }
+    }
+}
+
+- (BOOL)copyTailOfLogAtPath:(NSString *)sourcePath
+                     toPath:(NSString *)destinationPath
+                   maxBytes:(NSUInteger)maxBytes {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSNumber *fileSize = [[fileManager attributesOfItemAtPath:sourcePath error:nil]
+        objectForKey:NSFileSize];
+    if (!fileSize) {
+        return NO;
+    }
+
+    unsigned long long size = fileSize.unsignedLongLongValue;
+    unsigned long long offset = size > maxBytes ? size - maxBytes : 0;
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:sourcePath];
+    if (!handle) {
+        return NO;
+    }
+    [handle seekToFileOffset:offset];
+    NSData *tail = [handle readDataToEndOfFile];
     [handle closeFile];
+
+    if (offset > 0 && tail.length > 0) {
+        const uint8_t newline = '\n';
+        NSRange firstNewline = [tail rangeOfData:[NSData dataWithBytes:&newline length:1]
+                                         options:0
+                                           range:NSMakeRange(0, tail.length)];
+        if (firstNewline.location == NSNotFound || NSMaxRange(firstNewline) >= tail.length) {
+            return NO;
+        }
+        tail = [tail subdataWithRange:NSMakeRange(NSMaxRange(firstNewline),
+                                                  tail.length - NSMaxRange(firstNewline))];
+    }
+    return [tail writeToFile:destinationPath atomically:YES];
 }
 
 - (NSString *)diagnosticTimestamp {
@@ -1044,9 +2086,15 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
     AudioObjectID defaultSystemOutput = [self currentDefaultSystemOutputDeviceID];
     NSInteger scheduledBuffers = 0;
     UInt64 scheduledFrames = 0;
+    NSUInteger pendingPacketTasks = 0;
+    NSUInteger pendingPacketBytes = 0;
     @synchronized (self) {
         scheduledBuffers = self.scheduledBuffers;
         scheduledFrames = self.scheduledFrames;
+    }
+    @synchronized (self.ingressLock) {
+        pendingPacketTasks = self.pendingPacketTasks;
+        pendingPacketBytes = self.pendingPacketBytes;
     }
     double sampleRate = self.hasQueueFormat ? self.queueFormat.mSampleRate : 0;
     id queuedMilliseconds = sampleRate > 0
@@ -1069,6 +2117,12 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
             @"hasFormat": @(self.hasQueueFormat),
             @"sampleRate": self.hasQueueFormat ? @(self.queueFormat.mSampleRate) : [NSNull null],
             @"channels": self.hasQueueFormat ? @(self.queueFormat.mChannelsPerFrame) : [NSNull null]
+        },
+        @"ingress": @{
+            @"pendingTasks": @(pendingPacketTasks),
+            @"pendingBytes": @(pendingPacketBytes),
+            @"maximumPendingTasks": @(VBANAudioIngressMaximumPendingTasks),
+            @"maximumPendingBytes": @(VBANAudioIngressMaximumPendingBytes)
         },
         @"defaultOutput": [self dictionaryForDeviceID:defaultOutput],
         @"defaultSystemOutput": [self dictionaryForDeviceID:defaultSystemOutput],
@@ -1356,7 +2410,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
                 | ((uint32_t)bytes[offset + 3] << 24);
             float value = 0;
             memcpy(&value, &raw, sizeof(value));
-            return isfinite(value) ? value : 0;
+            return VBANAudioSanitizedFloatSample(value);
         }
         case VBANDataTypeFloat64: {
             uint64_t raw = 0;
@@ -1365,7 +2419,7 @@ static void VBANAudioQueueOutputCompleted(void *inUserData,
             }
             double value = 0;
             memcpy(&value, &raw, sizeof(value));
-            return isfinite(value) ? (float)value : 0;
+            return VBANAudioSanitizedFloatSample(value);
         }
     }
 }

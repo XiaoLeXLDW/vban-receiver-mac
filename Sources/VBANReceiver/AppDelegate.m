@@ -1,7 +1,10 @@
 #import "AppDelegate.h"
 
+#import "VBANActivityPolicy.h"
 #import "VBANAudioPlayer.h"
+#import "VBANCountCoalescer.h"
 #import "VBANPacket.h"
+#import "VBANReceiverStatsAccumulator.h"
 #import "VBANUDPReceiver.h"
 
 #import <math.h>
@@ -75,10 +78,6 @@ static NSColor *MuteTextColor(void) {
     return HexColor(0xE06A72);
 }
 
-static NSColor *MuteButtonFillColor(void) {
-    return HexColorAlpha(0x7A3338, 0.64);
-}
-
 static const CGFloat DashboardDefaultWidth = 600.0;
 static const CGFloat DashboardDefaultHeight = 400.0;
 static const CGFloat DashboardMinimumWidth = 600.0;
@@ -86,7 +85,6 @@ static const CGFloat DashboardMinimumHeight = 400.0;
 static const CGFloat DashboardHeaderHeight = 54.0;
 static const CGFloat DashboardMarginX = 16.0;
 static const CGFloat DashboardColumnGap = 12.0;
-static const CGFloat DashboardRowGap = 12.0;
 static const CGFloat DashboardLeftColumnWidth = 204.0;
 static const CGFloat DashboardRightColumnWidth = 352.0;
 static const CGFloat DashboardTopCardY = 58.0;
@@ -167,10 +165,6 @@ static NSFont *SystemFont(CGFloat size, NSFontWeight weight) {
     return [NSFont systemFontOfSize:size weight:weight];
 }
 
-static NSFont *MonoFont(CGFloat size, NSFontWeight weight) {
-    return [NSFont monospacedSystemFontOfSize:size weight:weight];
-}
-
 static NSTextField *Label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *color) {
     NSTextField *label = [NSTextField labelWithString:text];
     label.font = SystemFont(size, weight);
@@ -191,12 +185,6 @@ static NSFont *FittedSystemFont(NSString *text, CGFloat availableWidth, CGFloat 
         size -= 0.5;
     }
     return SystemFont(minimumSize, weight);
-}
-
-static void FitLabelToWidth(NSTextField *label, CGFloat baseSize, CGFloat minimumSize, NSFontWeight weight) {
-    label.font = FittedSystemFont(label.stringValue, label.bounds.size.width, baseSize, minimumSize, weight);
-    label.lineBreakMode = NSLineBreakByClipping;
-    label.toolTip = label.stringValue;
 }
 
 static void FitLabelToAvailableWidth(NSTextField *label, CGFloat availableWidth, CGFloat baseSize, CGFloat minimumSize, NSFontWeight weight) {
@@ -355,7 +343,11 @@ static CGFloat MetricLabelGapForLanguage(DashboardLanguage language) {
             : SystemFont(14, NSFontWeightSemibold),
         NSForegroundColorAttributeName: PrimaryTextColor()
     };
-    [self.title drawInRect:NSMakeRect(24, 8, titleWidth, 18) withAttributes:attrs];
+    // AppKit centers the typographic line box, whose visible glyphs sit
+    // slightly below the geometric center here: about 2 pt for Latin status
+    // text and 1 pt for CJK. Center the optical glyph bounds with the dot.
+    CGFloat titleY = self.language == DashboardLanguageEnglish ? 6.0 : 7.0;
+    [self.title drawInRect:NSMakeRect(24, titleY, titleWidth, 18) withAttributes:attrs];
 }
 @end
 
@@ -1495,7 +1487,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @property (nonatomic, strong) CompactDropdownButton *latencyPopup;
 @property (nonatomic, strong) NSButton *autoRepairButton;
 @property (nonatomic, strong) NSButton *manualRepairButton;
-@property (nonatomic, strong) NSTextField *outputResetLabel;
+@property (nonatomic, strong) NSTextField *outputEventLabel;
 @property (nonatomic, strong) NSTextField *networkTitleLabel;
 @property (nonatomic, strong) CounterTileView *packetTile;
 @property (nonatomic, strong) CounterTileView *missingTile;
@@ -1656,8 +1648,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         if (@available(macOS 11.0, *)) {
             _manualRepairButton.image = nil;
         }
-        _outputResetLabel = Label(@"Reset: 0", 13, NSFontWeightSemibold, SecondaryTextColor());
-        _outputResetLabel.alignment = NSTextAlignmentRight;
+        _outputEventLabel = Label(@"Recovery/Drop: 0", 13, NSFontWeightSemibold, SecondaryTextColor());
+        _outputEventLabel.alignment = NSTextAlignmentRight;
 
         _networkTitleLabel = Label(@"Network", 16, NSFontWeightSemibold, PrimaryTextColor());
         _packetTile = [[CounterTileView alloc] initWithTitle:@"Packets"];
@@ -1666,7 +1658,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         _badTile = [[CounterTileView alloc] initWithTitle:@"Errors"];
         _queueTile = [[CounterTileView alloc] initWithTitle:@"Queue resets"];
         _queueTile.hidden = YES;
-        _networkQueueLabel = Label(@"Queue: 0", 13, NSFontWeightSemibold, SecondaryTextColor());
+        _networkQueueLabel = Label(@"UDP", 13, NSFontWeightSemibold, SecondaryTextColor());
         _networkQualityLabel = Label(@"Normal", 13, NSFontWeightSemibold, SecondaryTextColor());
         _networkQualityLabel.alignment = NSTextAlignmentRight;
 
@@ -1675,7 +1667,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         NSArray *audioViews = @[
             _audioTitleLabel, _autoRepairButton, _manualRepairButton, _muteButton,
             _levelTitle, _levelValue, _meterLabel, _waveIcon, _levelMeter,
-            _latencyLabel, _latencyPopup, _outputResetLabel
+            _latencyLabel, _latencyPopup, _outputEventLabel
         ];
         for (NSView *view in audioViews) {
             [_audioCard addSubview:view];
@@ -1769,8 +1761,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     ApplyLanguageAwareLabel(self.latencyLabel, self.language, 16, 16, 11.5, self.latencyLabel.bounds.size.width, NSFontWeightSemibold);
     CGFloat latencyPopupWidth = self.language == DashboardLanguageEnglish ? 96 : 76;
     self.latencyPopup.frame = NSMakeRect(audioControlX, 164, latencyPopupWidth, DashboardDropdownHeight);
-    self.outputResetLabel.frame = NSMakeRect(audioWidth - inset - 58, 170, 58, 18);
-    ApplyLanguageAwareLabel(self.outputResetLabel, self.language, 13, 13, 10, self.outputResetLabel.bounds.size.width, NSFontWeightSemibold);
+    self.outputEventLabel.frame = NSMakeRect(audioWidth - inset - 128, 170, 128, 18);
+    ApplyLanguageAwareLabel(self.outputEventLabel, self.language, 13, 13, 9.5, self.outputEventLabel.bounds.size.width, NSFontWeightSemibold);
 
     CGFloat networkWidth = self.networkCard.bounds.size.width;
     CGFloat networkContentWidth = networkWidth - inset * 2;
@@ -1779,7 +1771,7 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     CGFloat tileWidth = floor((networkContentWidth - statGap * 3) / 4.0);
     CGFloat tileY = 38;
     NSArray *topTiles = @[self.packetTile, self.missingTile, self.filteredTile, self.badTile];
-    for (NSInteger index = 0; index < topTiles.count; index++) {
+    for (NSUInteger index = 0; index < topTiles.count; index++) {
         NSView *tile = topTiles[index];
         tile.frame = NSMakeRect(inset + index * (tileWidth + statGap), tileY, tileWidth, 44);
     }
@@ -1871,8 +1863,8 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.missingTile.titleLabel.stringValue = Localized(self.language, @"丢包", @"Missing");
     self.filteredTile.titleLabel.stringValue = Localized(self.language, @"过滤", @"Filtered");
     self.badTile.titleLabel.stringValue = Localized(self.language, @"错误", @"Errors");
-    self.queueTile.titleLabel.stringValue = Localized(self.language, @"队列重置", @"Queue resets");
-    self.networkQueueLabel.stringValue = Localized(self.language, @"队列：0", @"Queue: 0");
+    self.queueTile.titleLabel.stringValue = Localized(self.language, @"恢复/丢弃", @"Recovery/drop");
+    self.networkQueueLabel.stringValue = @"UDP";
     if ([self.networkQualityLabel.stringValue isEqualToString:@"Quality: Normal"] ||
         [self.networkQualityLabel.stringValue isEqualToString:@"连接质量：正常"] ||
         [self.networkQualityLabel.stringValue isEqualToString:@"质量：正常"]) {
@@ -2063,13 +2055,17 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [self.missingTile setValueText:[self compactCount:missing]];
     [self.filteredTile setValueText:[self compactCount:filtered]];
     [self.badTile setValueText:[self compactCount:bad]];
-    self.outputResetLabel.stringValue = Localized(
+    self.outputEventLabel.stringValue = Localized(
         self.language,
-        [NSString stringWithFormat:@"重置：%@", [self compactCount:queueDrops]],
-        [NSString stringWithFormat:@"Reset: %@", [self compactCount:queueDrops]]
+        [NSString stringWithFormat:@"恢复/丢弃：%@", [self compactCount:queueDrops]],
+        [NSString stringWithFormat:@"Recovery/Drop: %@", [self compactCount:queueDrops]]
     );
-    self.outputResetLabel.toolTip = Localized(self.language, @"输出重置次数", @"Output reset count");
-    self.networkQueueLabel.stringValue = Localized(self.language, @"队列：0", @"Queue: 0");
+    self.outputEventLabel.toolTip = Localized(
+        self.language,
+        @"音频输出恢复和入口丢弃事件数",
+        @"Audio output recovery and ingress drop events"
+    );
+    self.networkQueueLabel.stringValue = @"UDP";
     BOOL clean = missing == 0 && bad == 0;
     self.networkQualityLabel.stringValue = clean
         ? Localized(self.language, @"正常", @"Normal")
@@ -2121,13 +2117,16 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @property (nonatomic, strong) DashboardView *dashboard;
 @property (nonatomic, strong) VBANUDPReceiver *receiver;
 @property (nonatomic, strong) VBANAudioPlayer *audioPlayer;
-@property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, strong) NSTimer *levelTimer;
+@property (nonatomic, strong) NSTimer *packetFreshnessTimer;
 @property (nonatomic, strong) id keyMonitor;
 @property (nonatomic, assign) BOOL running;
-@property (nonatomic, strong, nullable) NSDate *lastPacketAt;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastFrameCountersByIdentity;
+@property (nonatomic, assign) NSUInteger receiverSessionGeneration;
+@property (nonatomic, assign) NSTimeInterval lastPacketUptime;
+@property (nonatomic, strong, nullable) VBANReceiverStatsAccumulator *receiverStats;
 @property (nonatomic, assign) NSUInteger packetCount;
 @property (nonatomic, assign) NSUInteger badPacketCount;
+@property (nonatomic, assign) NSUInteger audioErrorCount;
 @property (nonatomic, assign) NSUInteger filteredPacketCount;
 @property (nonatomic, assign) NSUInteger missingPacketCount;
 @property (nonatomic, assign) NSUInteger queueDropCount;
@@ -2135,7 +2134,20 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 @property (nonatomic, assign) double targetLevel;
 @property (nonatomic, assign, getter=isMuted) BOOL muted;
 @property (nonatomic, copy) NSString *stateMessage;
+@property (nonatomic, copy) NSString *currentStreamText;
+@property (nonatomic, copy) NSString *currentSenderText;
+@property (nonatomic, copy) NSString *currentFormatText;
+@property (nonatomic, copy) NSString *currentErrorMessage;
+@property (nonatomic, copy) NSString *currentAudioErrorMessage;
+@property (nonatomic, copy) NSString *currentOutputErrorMessage;
+@property (nonatomic, copy) NSString *unavailableOutputDeviceName;
 @property (nonatomic, assign) DashboardLanguage currentLanguage;
+@property (nonatomic, assign) BOOL presentationStateInitialized;
+@property (nonatomic, assign) BOOL presentationActive;
+@property (nonatomic, assign) BOOL renderedStateInitialized;
+@property (nonatomic, assign) BOOL renderedRunning;
+@property (nonatomic, assign) ReceiverStatusKind renderedStatusKind;
+@property (nonatomic, copy) NSString *renderedStateMessage;
 
 - (void)installApplicationIcon;
 - (void)installKeyboardMonitor;
@@ -2147,6 +2159,24 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (void)toggleAutoRepairFromStatusItem:(id)sender;
 - (BOOL)isToggleReceiveKeyEvent:(NSEvent *)event;
 - (void)toggleReceiving:(id)sender;
+- (BOOL)isPresentationVisible;
+- (void)updatePresentationActivity;
+- (void)applyDashboardSnapshot;
+- (void)startLevelTimerIfNeeded;
+- (void)stopLevelTimer;
+- (void)schedulePacketFreshnessTimerIfNeeded;
+- (void)stopPacketFreshnessTimer;
+- (ReceiverStatusKind)currentReceiverStatusKind;
+- (void)updateErrorMessage:(NSString *)message;
+- (void)updateAudioErrorMessage:(NSString *)message occurrenceCount:(NSUInteger)occurrenceCount;
+- (void)updateOutputAvailability:(BOOL)available deviceName:(nullable NSString *)deviceName;
+- (NSString *)effectiveErrorMessage;
+- (void)applyCurrentErrorMessage;
+- (void)installAudioSessionHandlersForGeneration:(NSUInteger)generation;
+- (void)clearAudioSessionHandlers;
+- (void)scheduleReceiverStatsDrain:(VBANReceiverStatsAccumulator *)stats
+                        generation:(NSUInteger)generation;
+- (void)applyReceiverStatsSnapshot:(VBANReceiverStatsSnapshot *)snapshot;
 
 @end
 
@@ -2160,7 +2190,6 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.receiver = [[VBANUDPReceiver alloc] init];
     self.audioPlayer = [[VBANAudioPlayer alloc] init];
     self.stateMessage = @"Stopped";
-    self.lastFrameCountersByIdentity = [NSMutableDictionary dictionary];
 
     self.dashboard = [[DashboardView alloc] initWithFrame:NSMakeRect(0, 0, DashboardDefaultWidth, DashboardDefaultHeight)];
     self.dashboard.language = self.currentLanguage;
@@ -2218,32 +2247,12 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     [self installStatusItem];
 
     __weak typeof(self) weakSelf = self;
-    self.audioPlayer.levelHandler = ^(double level) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            double normalized = MIN(MAX(level, 0), 1);
-            weakSelf.targetLevel = MAX(weakSelf.targetLevel * 0.92, normalized);
-        });
-    };
-    self.audioPlayer.errorHandler = ^(NSString *message) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf.dashboard setErrorMessage:message];
-        });
-    };
-    self.audioPlayer.queueDropHandler = ^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.queueDropCount++;
-            [weakSelf refreshCounters];
-        });
-    };
-
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0
-                                                  target:self
-                                                selector:@selector(timerFired:)
-                                                userInfo:nil
-                                                 repeats:YES];
-
     [self resetStats];
     [self refreshState];
+    [self updatePresentationActivity];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf updatePresentationActivity];
+    });
 }
 
 - (void)installApplicationIcon {
@@ -2369,11 +2378,16 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (void)showMainWindow:(id)sender {
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:sender];
+    [self updatePresentationActivity];
     [self refreshStatusItem];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updatePresentationActivity];
+    });
 }
 
 - (void)hideMainWindow:(id)sender {
     [self.window orderOut:sender];
+    [self updatePresentationActivity];
     [self refreshStatusItem];
 }
 
@@ -2560,6 +2574,24 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     return YES;
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification {
+    if (notification.object == self.window) {
+        [self updatePresentationActivity];
+    }
+}
+
+- (void)windowDidMiniaturize:(NSNotification *)notification {
+    if (notification.object == self.window) {
+        [self updatePresentationActivity];
+    }
+}
+
+- (void)windowDidDeminiaturize:(NSNotification *)notification {
+    if (notification.object == self.window) {
+        [self updatePresentationActivity];
+    }
+}
+
 - (NSMenu *)applicationDockMenu:(NSApplication *)sender {
     NSMenu *dockMenu = [[NSMenu alloc] initWithTitle:@""];
     NSString *toggleTitle = self.running
@@ -2589,6 +2621,12 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+    self.receiverSessionGeneration++;
+    self.running = NO;
+    [self clearAudioSessionHandlers];
+    [self stopLevelTimer];
+    [self stopPacketFreshnessTimer];
+    self.audioPlayer.levelReportingEnabled = NO;
     if (self.keyMonitor) {
         [NSEvent removeMonitor:self.keyMonitor];
         self.keyMonitor = nil;
@@ -2642,7 +2680,6 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (void)performManualOutputRepair {
-    self.audioPlayer.locksOutputDevice = YES;
     [self.audioPlayer reconnectOutput];
     [self.audioPlayer writeDiagnosticSnapshot:@"manual-output-repair"];
     self.queueDropCount++;
@@ -2650,38 +2687,160 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     self.dashboard.manualRepairButton.state = NSControlStateValueOff;
 }
 
+- (void)installAudioSessionHandlersForGeneration:(NSUInteger)generation {
+    VBANLatestValueCoalescer<NSNumber *> *levelUpdates = [[VBANLatestValueCoalescer alloc] init];
+    VBANLatestValueCoalescer<NSString *> *audioErrorMessages = [[VBANLatestValueCoalescer alloc] init];
+    VBANCountCoalescer *audioErrorCounts = [[VBANCountCoalescer alloc] init];
+    VBANLatestValueCoalescer<NSDictionary *> *outputAvailabilityUpdates =
+        [[VBANLatestValueCoalescer alloc] init];
+    VBANCountCoalescer *queueDropCounts = [[VBANCountCoalescer alloc] init];
+    __weak typeof(self) weakSelf = self;
+
+    self.audioPlayer.levelHandler = ^(double level) {
+        if (![levelUpdates recordValue:@(level)]) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSNumber *latestLevel = [levelUpdates drainValue];
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self
+                || !self.running
+                || self.receiverSessionGeneration != generation
+                || ![self isPresentationVisible]) {
+                return;
+            }
+            double normalized = MIN(MAX(latestLevel.doubleValue, 0), 1);
+            self.targetLevel = MAX(self.targetLevel * 0.92, normalized);
+            [self startLevelTimerIfNeeded];
+        });
+    };
+
+    void (^recordAudioStatus)(NSString *, BOOL) = ^(NSString *message, BOOL isError) {
+        BOOL shouldSchedule = NO;
+        @synchronized (audioErrorMessages) {
+            shouldSchedule = [audioErrorMessages recordValue:message ?: @""];
+            if (isError) {
+                [audioErrorCounts recordCount:1];
+            }
+        }
+        if (!shouldSchedule) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *latestMessage = nil;
+            NSUInteger occurrenceCount = 0;
+            @synchronized (audioErrorMessages) {
+                latestMessage = [audioErrorMessages drainValue] ?: @"";
+                occurrenceCount = [audioErrorCounts drainCount];
+            }
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self
+                || !self.running
+                || self.receiverSessionGeneration != generation) {
+                return;
+            }
+            [self updateAudioErrorMessage:latestMessage occurrenceCount:occurrenceCount];
+        });
+    };
+    self.audioPlayer.errorHandler = ^(NSString *message) {
+        recordAudioStatus(message, YES);
+    };
+    self.audioPlayer.playbackStartedHandler = ^{
+        recordAudioStatus(@"", NO);
+    };
+
+    self.audioPlayer.outputAvailabilityHandler = ^(BOOL available, NSString *deviceName) {
+        NSDictionary *update = @{
+            @"available": @(available),
+            @"deviceName": deviceName ?: NSNull.null
+        };
+        if (![outputAvailabilityUpdates recordValue:update]) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSDictionary *latestUpdate = [outputAvailabilityUpdates drainValue];
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self
+                || !self.running
+                || self.receiverSessionGeneration != generation) {
+                return;
+            }
+            id deviceValue = latestUpdate[@"deviceName"];
+            NSString *latestDeviceName = [deviceValue isKindOfClass:NSString.class]
+                ? deviceValue
+                : nil;
+            [self updateOutputAvailability:[latestUpdate[@"available"] boolValue]
+                               deviceName:latestDeviceName];
+        });
+    };
+
+    self.audioPlayer.queueDropHandler = ^(NSUInteger count) {
+        if (![queueDropCounts recordCount:count]) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSUInteger coalescedCount = [queueDropCounts drainCount];
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self
+                || !self.running
+                || self.receiverSessionGeneration != generation) {
+                return;
+            }
+            self.queueDropCount = coalescedCount > NSUIntegerMax - self.queueDropCount
+                ? NSUIntegerMax
+                : self.queueDropCount + coalescedCount;
+            [self refreshCounters];
+        });
+    };
+}
+
+- (void)clearAudioSessionHandlers {
+    self.audioPlayer.levelHandler = nil;
+    self.audioPlayer.errorHandler = nil;
+    self.audioPlayer.outputAvailabilityHandler = nil;
+    self.audioPlayer.playbackStartedHandler = nil;
+    self.audioPlayer.queueDropHandler = nil;
+}
+
 - (void)startPressed:(id)sender {
     uint16_t portValue = 0;
     if (!ParsePortValue(self.dashboard.portValue, &portValue)) {
-        [self.dashboard setErrorMessage:Localized(self.currentLanguage, @"端口必须是 1-65535", @"Port must be 1-65535")];
+        [self updateErrorMessage:Localized(self.currentLanguage, @"端口必须是 1-65535", @"Port must be 1-65535")];
         return;
     }
 
+    NSUInteger generation = ++self.receiverSessionGeneration;
+    VBANReceiverStatsAccumulator *stats = [[VBANReceiverStatsAccumulator alloc] init];
+    self.receiverStats = stats;
+    [self installAudioSessionHandlersForGeneration:generation];
     [self resetStats];
     self.audioPlayer.playbackProfile = self.dashboard.playbackProfileValue;
 
     __weak typeof(self) weakSelf = self;
+    NSString *badPacketFallback = Localized(self.currentLanguage, @"VBAN 数据包无效", @"Bad VBAN packet");
     self.receiver.packetHandler = ^(VBANPacket *packet) {
         [weakSelf.audioPlayer enqueuePacket:packet];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf recordPacket:packet];
-        });
+        if ([stats recordPacket:packet uptime:NSProcessInfo.processInfo.systemUptime]) {
+            [weakSelf scheduleReceiverStatsDrain:stats generation:generation];
+        }
     };
     self.receiver.parseErrorHandler = ^(NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.badPacketCount++;
-            [weakSelf.dashboard setErrorMessage:error.localizedDescription ?: Localized(weakSelf.currentLanguage, @"VBAN 数据包无效", @"Bad VBAN packet")];
-            [weakSelf refreshCounters];
-        });
+        if ([stats recordBadPacketError:error fallbackMessage:badPacketFallback]) {
+            [weakSelf scheduleReceiverStatsDrain:stats generation:generation];
+        }
     };
     self.receiver.filteredPacketHandler = ^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.filteredPacketCount++;
-            [weakSelf refreshCounters];
-        });
+        if ([stats recordFilteredPacket]) {
+            [weakSelf scheduleReceiverStatsDrain:stats generation:generation];
+        }
     };
     self.receiver.stateHandler = ^(NSString *state) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (!weakSelf
+                || weakSelf.receiverSessionGeneration != generation
+                || weakSelf.receiverStats != stats) {
+                return;
+            }
             weakSelf.stateMessage = state ?: @"";
             [weakSelf refreshState];
         });
@@ -2693,17 +2852,22 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
                                      sourceHost:self.dashboard.sourceValue
                                           error:&error];
     if (!started) {
-        [self.dashboard setErrorMessage:error.localizedDescription ?: Localized(self.currentLanguage, @"无法启动接收器", @"Cannot start receiver")];
+        [self updateErrorMessage:error.localizedDescription ?: Localized(self.currentLanguage, @"无法启动接收器", @"Cannot start receiver")];
         self.running = NO;
+        self.receiverStats = nil;
+        [self clearAudioSessionHandlers];
         self.stateMessage = @"Stopped";
         [self refreshState];
+        [self updatePresentationActivity];
         return;
     }
 
     self.running = YES;
     self.stateMessage = @"Listening";
     [self.audioPlayer writeDiagnosticSnapshot:@"receiver-started"];
+    [self applyCurrentErrorMessage];
     [self refreshState];
+    [self updatePresentationActivity];
 }
 
 - (void)latencyChanged:(id)sender {
@@ -2733,11 +2897,20 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (void)languagePressed:(id)sender {
     [self.dashboard toggleLanguage];
     self.currentLanguage = self.dashboard.language;
+    if (self.lastPacketUptime <= 0) {
+        self.currentFormatText = [self.dashboard localizedNoSignalText];
+    }
+    if (self.unavailableOutputDeviceName.length) {
+        self.currentOutputErrorMessage = [NSString stringWithFormat:
+            Localized(self.currentLanguage, @"输出不可用：%@", @"Output unavailable: %@"),
+            self.unavailableOutputDeviceName];
+    }
+    self.renderedStateInitialized = NO;
     self.window.title = Localized(self.currentLanguage, @"VBAN 接收器", @"VBAN Receiver");
     [self installMainMenu];
-    [self refreshStatusItem];
-    [self refreshCounters];
     [self refreshState];
+    [self applyDashboardSnapshot];
+    [self refreshStatusItem];
 }
 
 - (void)manualRepairPressed:(id)sender {
@@ -2749,52 +2922,95 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (void)stopPressed:(id)sender {
+    self.receiverSessionGeneration++;
+    self.running = NO;
+    self.receiverStats = nil;
     [self.receiver stop];
+    self.receiver.packetHandler = nil;
+    self.receiver.parseErrorHandler = nil;
+    self.receiver.filteredPacketHandler = nil;
+    self.receiver.stateHandler = nil;
+    [self clearAudioSessionHandlers];
     [self.audioPlayer writeDiagnosticSnapshot:@"receiver-stop-requested"];
     [self.audioPlayer reset];
-    self.running = NO;
+    [self stopPacketFreshnessTimer];
+    self.currentErrorMessage = @"";
+    self.currentAudioErrorMessage = @"";
+    self.currentOutputErrorMessage = @"";
+    self.unavailableOutputDeviceName = @"";
     self.level = 0;
     self.targetLevel = 0;
     self.stateMessage = @"Stopped";
-    [self.dashboard setLevel:0];
+    [self stopLevelTimer];
+    if ([self isPresentationVisible]) {
+        [self.dashboard setLevel:0];
+    }
+    [self applyCurrentErrorMessage];
     [self refreshState];
+    [self updatePresentationActivity];
 }
 
-- (void)recordPacket:(VBANPacket *)packet {
-    self.packetCount++;
-    self.lastPacketAt = [NSDate date];
-    [self.dashboard setErrorMessage:@""];
-
-    NSString *sequenceIdentity = [self sequenceIdentityForPacket:packet];
-    NSNumber *lastFrameCounter = self.lastFrameCountersByIdentity[sequenceIdentity];
-    if (lastFrameCounter) {
-        uint32_t previous = lastFrameCounter.unsignedIntValue;
-        uint32_t expected = previous + 1;
-        if (packet.frameCounter != expected) {
-            if (packet.frameCounter != previous) {
-                uint32_t delta = packet.frameCounter - expected;
-                self.missingPacketCount += (delta > 0 && delta < 10000) ? delta : 1;
-            }
-        }
+- (void)applyReceiverStatsSnapshot:(VBANReceiverStatsSnapshot *)snapshot {
+    self.packetCount += snapshot.packetDelta;
+    self.badPacketCount += snapshot.badPacketDelta;
+    self.filteredPacketCount += snapshot.filteredPacketDelta;
+    if (snapshot.missingPacketDelta >= 0) {
+        self.missingPacketCount += (NSUInteger)snapshot.missingPacketDelta;
+    } else {
+        NSUInteger repairedCount = (NSUInteger)(-snapshot.missingPacketDelta);
+        self.missingPacketCount = repairedCount >= self.missingPacketCount
+            ? 0
+            : self.missingPacketCount - repairedCount;
     }
-    self.lastFrameCountersByIdentity[sequenceIdentity] = @(packet.frameCounter);
+    if (snapshot.hasNetworkErrorUpdate) {
+        [self updateErrorMessage:snapshot.networkErrorMessage];
+    }
 
+    VBANPacket *packet = snapshot.latestPacket;
+    if (!packet) {
+        [self refreshCounters];
+        return;
+    }
+    self.lastPacketUptime = snapshot.latestPacketUptime;
     NSString *stream = packet.streamName.length ? packet.streamName : Localized(self.currentLanguage, @"（未命名）", @"(unnamed)");
-    [self.dashboard setStream:stream sender:packet.sender format:packet.formatDescription];
+    NSString *sender = packet.sender ?: @"-";
+    NSString *format = packet.formatDescription ?: @"-";
+    BOOL streamChanged = ![self.currentStreamText isEqualToString:stream]
+        || ![self.currentSenderText isEqualToString:sender]
+        || ![self.currentFormatText isEqualToString:format];
+    self.currentStreamText = stream;
+    self.currentSenderText = sender;
+    self.currentFormatText = format;
+    if (streamChanged && [self isPresentationVisible]) {
+        [self.dashboard setStream:stream sender:sender format:format];
+    }
     [self refreshCounters];
     [self refreshState];
+    [self schedulePacketFreshnessTimerIfNeeded];
 }
 
-- (NSString *)sequenceIdentityForPacket:(VBANPacket *)packet {
-    return [NSString stringWithFormat:@"%@|%@|%.0f|%lu|%u",
-            packet.sender ?: @"",
-            packet.streamName ?: @"",
-            packet.sampleRate,
-            (unsigned long)packet.channelCount,
-            packet.dataType];
+- (void)scheduleReceiverStatsDrain:(VBANReceiverStatsAccumulator *)stats
+                        generation:(NSUInteger)generation {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        VBANReceiverStatsSnapshot *snapshot = [stats drainSnapshot];
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self
+            || !self.running
+            || self.receiverSessionGeneration != generation
+            || self.receiverStats != stats) {
+            return;
+        }
+        [self applyReceiverStatsSnapshot:snapshot];
+    });
 }
 
 - (void)timerFired:(NSTimer *)timer {
+    if (timer != self.levelTimer || ![self isPresentationVisible] || !self.running) {
+        [self stopLevelTimer];
+        return;
+    }
+
     double rate = self.targetLevel > self.level ? 0.18 : 0.055;
     self.level += (self.targetLevel - self.level) * rate;
     self.targetLevel *= 0.91;
@@ -2805,42 +3021,247 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
     }
 
     [self.dashboard setLevel:self.level];
-    [self refreshState];
+    if (!VBANShouldAnimateLevel(YES, self.running, self.level, self.targetLevel)) {
+        [self stopLevelTimer];
+    }
 }
 
 - (void)resetStats {
+    [self stopLevelTimer];
+    [self stopPacketFreshnessTimer];
     self.packetCount = 0;
     self.badPacketCount = 0;
+    self.audioErrorCount = 0;
     self.filteredPacketCount = 0;
     self.missingPacketCount = 0;
     self.queueDropCount = 0;
-    [self.lastFrameCountersByIdentity removeAllObjects];
-    self.lastPacketAt = nil;
+    self.lastPacketUptime = 0;
     self.level = 0;
     self.targetLevel = 0;
-    [self.dashboard setLevel:0];
-    [self.dashboard setStream:@"-" sender:@"-" format:[self.dashboard localizedNoSignalText]];
-    [self.dashboard setErrorMessage:@""];
+    self.currentStreamText = @"-";
+    self.currentSenderText = @"-";
+    self.currentFormatText = [self.dashboard localizedNoSignalText];
+    self.currentErrorMessage = @"";
+    self.currentAudioErrorMessage = @"";
+    if ([self isPresentationVisible]) {
+        [self.dashboard setLevel:0];
+        [self.dashboard setStream:self.currentStreamText
+                          sender:self.currentSenderText
+                          format:self.currentFormatText];
+        [self.dashboard setErrorMessage:[self effectiveErrorMessage]];
+    }
     [self refreshCounters];
 }
 
 - (void)refreshCounters {
+    if (![self isPresentationVisible]) {
+        return;
+    }
     [self.dashboard setCountersPackets:self.packetCount
                                missing:self.missingPacketCount
                               filtered:self.filteredPacketCount
-                                   bad:self.badPacketCount
+                                   bad:self.badPacketCount + self.audioErrorCount
                             queueDrops:self.queueDropCount];
 }
 
 - (void)refreshState {
-    ReceiverStatusKind kind = ReceiverStatusKindStopped;
-    if (self.running) {
-        BOOL freshPacket = self.lastPacketAt && [[NSDate date] timeIntervalSinceDate:self.lastPacketAt] < 2.0;
-        kind = freshPacket ? ReceiverStatusKindReceiving : ReceiverStatusKindWaiting;
+    ReceiverStatusKind kind = [self currentReceiverStatusKind];
+    NSString *stateMessage = self.stateMessage ?: @"";
+    BOOL changed = !self.renderedStateInitialized
+        || self.renderedRunning != self.running
+        || self.renderedStatusKind != kind
+        || ![self.renderedStateMessage isEqualToString:stateMessage];
+    if (!changed) {
+        return;
     }
-    [self.dashboard setRunning:self.running];
-    [self.dashboard setStateText:self.stateMessage kind:kind];
+
+    self.renderedStateInitialized = YES;
+    self.renderedRunning = self.running;
+    self.renderedStatusKind = kind;
+    self.renderedStateMessage = stateMessage;
+    if ([self isPresentationVisible]) {
+        [self.dashboard setRunning:self.running];
+        [self.dashboard setStateText:stateMessage kind:kind];
+    }
     [self refreshStatusItem];
+}
+
+- (ReceiverStatusKind)currentReceiverStatusKind {
+    if (!self.running) {
+        return ReceiverStatusKindStopped;
+    }
+    if (self.lastPacketUptime <= 0) {
+        return ReceiverStatusKindWaiting;
+    }
+
+    NSTimeInterval age = NSProcessInfo.processInfo.systemUptime - self.lastPacketUptime;
+    return VBANPacketAgeIsFresh(age) ? ReceiverStatusKindReceiving : ReceiverStatusKindWaiting;
+}
+
+- (BOOL)isPresentationVisible {
+    if (!self.window.visible || self.window.miniaturized) {
+        return NO;
+    }
+    return (self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+}
+
+- (void)updatePresentationActivity {
+    BOOL active = [self isPresentationVisible];
+    BOOL changed = !self.presentationStateInitialized || self.presentationActive != active;
+    self.presentationStateInitialized = YES;
+    self.presentationActive = active;
+    self.audioPlayer.levelReportingEnabled = active && self.running;
+
+    if (!active) {
+        [self stopLevelTimer];
+        self.level = 0;
+        self.targetLevel = 0;
+        return;
+    }
+
+    if (changed) {
+        [self applyDashboardSnapshot];
+    }
+    [self startLevelTimerIfNeeded];
+}
+
+- (void)applyDashboardSnapshot {
+    if (![self isPresentationVisible]) {
+        return;
+    }
+
+    [self.dashboard setRunning:self.running];
+    [self.dashboard setStateText:self.stateMessage ?: @"" kind:[self currentReceiverStatusKind]];
+    [self.dashboard setStream:self.currentStreamText ?: @"-"
+                      sender:self.currentSenderText ?: @"-"
+                      format:self.currentFormatText ?: [self.dashboard localizedNoSignalText]];
+    [self.dashboard setErrorMessage:[self effectiveErrorMessage]];
+    [self.dashboard setLevel:self.level];
+    [self refreshCounters];
+}
+
+- (void)startLevelTimerIfNeeded {
+    if (self.levelTimer
+        || !VBANShouldAnimateLevel([self isPresentationVisible], self.running, self.level, self.targetLevel)) {
+        return;
+    }
+
+    self.levelTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0
+                                                      target:self
+                                                    selector:@selector(timerFired:)
+                                                    userInfo:nil
+                                                     repeats:YES];
+    self.levelTimer.tolerance = 1.0 / 120.0;
+}
+
+- (void)stopLevelTimer {
+    [self.levelTimer invalidate];
+    self.levelTimer = nil;
+}
+
+- (void)schedulePacketFreshnessTimerIfNeeded {
+    if (self.packetFreshnessTimer || !self.running || self.lastPacketUptime <= 0) {
+        return;
+    }
+
+    NSTimeInterval age = NSProcessInfo.processInfo.systemUptime - self.lastPacketUptime;
+    if (!VBANPacketAgeIsFresh(age)) {
+        [self refreshState];
+        return;
+    }
+
+    NSTimer *timer = [NSTimer timerWithTimeInterval:VBANPacketFreshnessDelay(age)
+                                            target:self
+                                          selector:@selector(packetFreshnessTimerFired:)
+                                          userInfo:nil
+                                           repeats:NO];
+    timer.tolerance = 0.05;
+    self.packetFreshnessTimer = timer;
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+}
+
+- (void)packetFreshnessTimerFired:(NSTimer *)timer {
+    if (timer != self.packetFreshnessTimer) {
+        return;
+    }
+    self.packetFreshnessTimer = nil;
+
+    if (!self.running || self.lastPacketUptime <= 0) {
+        return;
+    }
+
+    NSTimeInterval age = NSProcessInfo.processInfo.systemUptime - self.lastPacketUptime;
+    if (VBANPacketAgeIsFresh(age)) {
+        [self schedulePacketFreshnessTimerIfNeeded];
+    } else {
+        [self refreshState];
+    }
+}
+
+- (void)stopPacketFreshnessTimer {
+    [self.packetFreshnessTimer invalidate];
+    self.packetFreshnessTimer = nil;
+}
+
+- (void)updateErrorMessage:(NSString *)message {
+    NSString *normalized = message ?: @"";
+    if ([self.currentErrorMessage isEqualToString:normalized]) {
+        return;
+    }
+    self.currentErrorMessage = normalized;
+    [self applyCurrentErrorMessage];
+}
+
+- (void)updateAudioErrorMessage:(NSString *)message occurrenceCount:(NSUInteger)occurrenceCount {
+    NSString *normalized = message ?: @"";
+    BOOL messageChanged = ![self.currentAudioErrorMessage isEqualToString:normalized];
+    if (!messageChanged && occurrenceCount == 0) {
+        return;
+    }
+    if (occurrenceCount > 0) {
+        self.audioErrorCount = occurrenceCount > NSUIntegerMax - self.audioErrorCount
+            ? NSUIntegerMax
+            : self.audioErrorCount + occurrenceCount;
+    }
+    self.currentAudioErrorMessage = normalized;
+    if (messageChanged) {
+        [self applyCurrentErrorMessage];
+    }
+    [self refreshCounters];
+}
+
+- (void)updateOutputAvailability:(BOOL)available deviceName:(NSString *)deviceName {
+    NSString *normalizedName = deviceName.length
+        ? deviceName
+        : Localized(self.currentLanguage, @"默认输出", @"Default Output");
+    NSString *message = available
+        ? @""
+        : [NSString stringWithFormat:
+            Localized(self.currentLanguage, @"输出不可用：%@", @"Output unavailable: %@"),
+            normalizedName];
+    if ([self.currentOutputErrorMessage isEqualToString:message]
+        && (available || [self.unavailableOutputDeviceName isEqualToString:normalizedName])) {
+        return;
+    }
+    self.unavailableOutputDeviceName = available ? @"" : normalizedName;
+    self.currentOutputErrorMessage = message;
+    [self applyCurrentErrorMessage];
+}
+
+- (NSString *)effectiveErrorMessage {
+    if (self.running && self.currentOutputErrorMessage.length) {
+        return self.currentOutputErrorMessage;
+    }
+    if (self.running && self.currentAudioErrorMessage.length) {
+        return self.currentAudioErrorMessage;
+    }
+    return self.currentErrorMessage ?: @"";
+}
+
+- (void)applyCurrentErrorMessage {
+    if ([self isPresentationVisible]) {
+        [self.dashboard setErrorMessage:[self effectiveErrorMessage]];
+    }
 }
 
 @end

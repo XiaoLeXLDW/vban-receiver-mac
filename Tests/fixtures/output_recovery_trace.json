@@ -1,0 +1,44 @@
+[
+  {
+    "time": "2026-07-22T21:21:53.615+08:00",
+    "hasAudioQueue": true,
+    "outputAvailable": true,
+    "routeChanged": false,
+    "outputFormatCompatible": true,
+    "queueStarted": true,
+    "queueRunningKnown": true,
+    "queueRunning": true,
+    "hasPendingAudio": true,
+    "hasFreshInput": true,
+    "queuedMilliseconds": 71,
+    "expectedDecision": "none"
+  },
+  {
+    "time": "2026-07-23T00:35:02.091+08:00",
+    "hasAudioQueue": true,
+    "outputAvailable": true,
+    "routeChanged": false,
+    "outputFormatCompatible": true,
+    "queueStarted": true,
+    "queueRunningKnown": true,
+    "queueRunning": true,
+    "hasPendingAudio": true,
+    "hasFreshInput": true,
+    "queuedMilliseconds": 56,
+    "expectedDecision": "none"
+  },
+  {
+    "time": "2026-07-23T01:26:10.219+08:00",
+    "hasAudioQueue": true,
+    "outputAvailable": true,
+    "routeChanged": false,
+    "outputFormatCompatible": true,
+    "queueStarted": true,
+    "queueRunningKnown": true,
+    "queueRunning": true,
+    "hasPendingAudio": true,
+    "hasFreshInput": true,
+    "queuedMilliseconds": 34,
+    "expectedDecision": "none"
+  }
+]

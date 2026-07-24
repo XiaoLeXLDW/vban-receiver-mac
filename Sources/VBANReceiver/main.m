@@ -2,7 +2,7 @@
 
 #import "AppDelegate.h"
 
-int main(int argc, const char *argv[]) {
+int main(__unused int argc, __unused const char *argv[]) {
     @autoreleasepool {
         NSApplication *application = [NSApplication sharedApplication];
         AppDelegate *delegate = [[AppDelegate alloc] init];

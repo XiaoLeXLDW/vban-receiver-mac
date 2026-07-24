@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.3.13 - 2026-07-24
+
+### Added
+
+- Added `make perf-idle`, a real-machine CPU gate with a 3-second warmup, 10 samples, a median below 1%, and rejection of three consecutive samples above 3%.
+- Added bounded receiver-statistics and audio-ingress regression tests, including reordered frame counters, identity eviction, Float64 sanitization, and UDP backlog shutdown.
+- Added read-only artifact validation, a strict Developer ID/Gatekeeper/notarization release gate, and a Git-tracked release-input check.
+- Added focused activity-policy tests for packet freshness and level-meter animation lifecycle decisions.
+- Added `CONTEXT.md` to define Stopped, Waiting, Receiving, Menu Bar Residency, and Presentation Suspended consistently.
+- Added a pure output-recovery policy with captured-trace, timer re-arm, notification-storm, route, format, stall, and restoration tests.
+- Added ADR 0001 to define state-diff-driven output recovery.
+- Added the MIT License to the source repository and packaged app resources.
+
+### Changed
+
+- Replaced the always-running 30 Hz dashboard timer with an on-demand level animation timer that exists only while the receiver is running, the window is visible, and the meter is active.
+- Replaced polling for the Receiving-to-Waiting transition with a monotonic, one-shot freshness timer while preserving the existing 2-second threshold.
+- Suspended level calculation and all dashboard rendering while the window is hidden, minimized, fully occluded, or on another Space; UDP reception, audio playback, counters, and automatic output repair continue normally.
+- Restored the latest in-memory dashboard snapshot when the window becomes visible again.
+- Avoided repeated AppKit state, icon, font, and menu updates when the rendered receiver state has not changed.
+- Coalesced CoreAudio output notifications after 200 ms of quiet, capped at one second, and evaluated the final effective output state before deciding whether playback needs recovery.
+- Followed a real default-output route change with one controlled restart while ignoring nominal-rate, running, hog-mode, and same-route notifications when the queue remains healthy.
+- Made Manual Repair reconnect the current effective output without silently enabling output-device locking.
+- Preserved locked output identity by UID so a reattached device can be resolved even if CoreAudio assigns a new object ID.
+- Gave each Audio Queue generation an independent callback context and rejected delayed callbacks from replaced queues.
+- Separated persistent Output Unavailable errors from transient packet/audio errors; normal packets no longer clear an output fault.
+- Rotated the diagnostic JSONL at 10 MB with two backups and a cross-process lock; failed rotation keeps the source log intact.
+- Coalesced packet statistics into at most one pending main-thread refresh and capped tracked sender/stream identities.
+- Bounded UDP drain work per dispatch-source callback and audio ingress to 256 pending tasks or 8 MiB.
+- Limited audio queue reconfiguration attempts during hostile or unstable format oscillation, and coalesced audio callbacks before main-thread delivery.
+- Refreshed the English and Chinese README screenshots and quick-start guides from the current app UI.
+- Bumped the default packaged app version to `0.3.13` and build number to `17`.
+
+### Fixed
+
+- Fixed latency jumps and reset-count spikes caused by treating every CoreAudio property notification as an output failure.
+- Fixed a potential Audio Queue callback race during stop/dispose and a possible `reset` self-deadlock on the audio serial queue.
+- Fixed the 500 ms restoration deadline so a single packet below the start-buffer threshold cannot produce a false Output Unavailable alert.
+- Fixed Manual Repair being treated as standalone evidence for repeated automatic queue rebuilds.
+- Fixed hostname and equivalent IPv4/IPv6 source filters by resolving them once at receiver startup.
+- Fixed late packets regressing the sequence watermark and permanently inflating the Missing counter.
+- Fixed Float64 values overflowing to non-finite Float32 samples.
+- Fixed stale receiver-session callbacks and successful network packets hiding persistent audio-output errors.
+- Fixed `make validate-app` rebuilding and replacing the artifact it was supposed to validate.
+- Fixed IPv6 link-local source filtering across interface scopes and bounded per-stream reorder bookkeeping.
+- Fixed handler replacement races during stop, and made the next successful playback enqueue clear a transient audio error.
+- Fixed rapid UDP stop/restart descriptor reuse by closing sockets from the dispatch-source cancel handler and waiting for cancellation off the receiver queue.
+- Fixed false `Listening` state when another IPv4 UDP socket already owns the requested port; startup now fails with the bind error instead of sharing and losing traffic.
+- Optically aligned the Chinese and English status-pill text with its indicator dot.
+- Fixed failed CoreAudio listener removal leaving a callback context that could outlive the player.
+- Fixed slow or transiently failed output restoration preventing later packet-driven retries while the intended device is available.
+- Fixed release-tree validation so ignored files are skipped and unstaged release-input changes cannot differ from the prospective commit.
+
+### Performance
+
+- Reduced visible Stopped CPU from an observed median of approximately 16.2% to 0.000% in the 10-sample idle gate.
+- Verified Waiting on an unused UDP port at 0.0% across all 10 samples.
+
+### Verified
+
+- `make test`
+- `make perf-idle`
+- `make validate-app`
+- The custom-version artifact hash remaining unchanged across `make validate-app`.
+- ASan/UBSan and TSan runs for all six test binaries.
+- Synthetic VBAN receive, the 2-second Receiving-to-Waiting transition, and hidden-window receive/snapshot restoration.
+- A 50-notification same-state storm with zero restarts.
+- A silent real-device route switch from Built-in Speaker to BlackHole and back, with exactly one restart per switch and the original route restored.
+- AddressSanitizer and ThreadSanitizer silent-receive probes.
+- 10 MB active plus two-backup log rotation and a forced copy-failure preservation path.
+- A 15-minute 48 kHz silent receive soak with 168,751 packets sent/received, zero errors, zero resets, and zero buffer-pressure events.
+
 ## 0.3.12 - 2026-07-03
 
 This version consolidates the UI/tray engineering log and the unreleased changelog into one release entry.

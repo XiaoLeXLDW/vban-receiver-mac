@@ -23,6 +23,7 @@
   <img alt="Objective-C" src="https://img.shields.io/badge/Objective--C-AppKit-334155">
   <img alt="CoreAudio" src="https://img.shields.io/badge/Audio-CoreAudio-0f766e">
   <img alt="VBAN" src="https://img.shields.io/badge/Protocol-VBAN-f97316">
+  <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-22c55e">
 </p>
 
 ![VBAN Receiver 主界面](docs/assets/vban-receiver-app.png)
@@ -39,7 +40,7 @@
 - 将 PCM 音频播放到 macOS 默认输出设备。
 - 可按流名和发送端主机过滤。
 - 支持音量、静音、自动修复和延迟策略。
-- 提供数据、丢包、过滤、错误和队列状态计数。
+- 提供数据、丢包、过滤、错误，以及音频恢复/丢弃事件计数。
 
 ## 快速开始
 
@@ -104,6 +105,14 @@ make build
 
 `make app` 会在 `dist/` 下生成 Apple Silicon `arm64` app bundle，并用 ad-hoc 签名用于本机测试。若要公开分发 `.app`，仍需要 Developer ID 签名和 notarization。
 
+`make validate-app` 只校验已经存在的 bundle，不会重新构建。公开发布前，先运行 `make validate-release-tree`，使用 Developer ID 身份打包；完成 notarization 和 stapling 后，再运行 `make validate-release VERSION=... BUILD_NUMBER=...`。
+
+VBAN 协议本身不验证发送者身份。请仅在可信局域网中使用，并尽量设置 `来源`；主机名或 IP 会在开始接收时解析一次。
+
 ## 工具链说明
 
 本项目基于 Objective-C/AppKit，使用 `clang` 构建。构建时需要 Xcode Command Line Tools，但无需安装完整 Xcode。当前 release 是仅包含 `arm64` 架构的 Mach-O，面向 Apple Silicon，不是 Universal binary。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。
