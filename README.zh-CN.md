@@ -32,6 +32,8 @@
 
 ![VBAN Receiver 接收中](docs/assets/vban-receiver-receiving-zh.png)
 
+截图使用本机回环测试流和临时端口；实际使用请填写 Mac 的局域网 IP，并让两端端口一致（默认 `6980`）。
+
 ## 主要功能
 
 - 原生 AppKit 界面，支持中文和英文切换。
@@ -42,28 +44,18 @@
 - 支持音量、静音、自动修复和延迟策略。
 - 提供数据、丢包、过滤、错误，以及音频恢复/丢弃事件计数。
 
-## 快速开始
+## 下载并安装
 
-要求：
+需要 **macOS 13 或更高版本、Apple Silicon Mac**。下载使用不需要 Xcode；发布附件不包含 Intel `x86_64` 架构。
 
-- macOS 13 或更高版本。
-- Apple Silicon Mac，例如 M1/M2/M3/M4。当前 release 不是 Universal binary，不包含 Intel `x86_64` 架构。
-- Xcode Command Line Tools。
+1. 打开 [v0.3.13 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13)，下载 `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
+2. 解压后将 `VBAN Receiver.app` 拖入“应用程序”。
+3. 打开 app。该社区附件使用 **ad-hoc 签名，尚未使用 Developer ID 签名或公证**。如果 macOS 阻止打开，请在确认下载来源后，按“系统设置 → 隐私与安全性”中的提示允许该 app 打开。
+4. 按下面的 VoiceMeeter 设置发送音频，再点击“开始接收”。
 
-在仓库根目录构建并打开 app：
+遇到开发者验证提示时，请参阅 [Apple 官方打开说明](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac)。
 
-```bash
-make test
-make app
-open "dist/VBAN Receiver.app"
-```
-
-不打包 app、直接运行命令行程序：
-
-```bash
-make build
-./.build/VBANReceiver
-```
+**版本范围：**下载入口对应已发布的 v0.3.13。该标签之后的源码改动不包含在此发布附件中。
 
 ## VoiceMeeter 设置
 
@@ -89,7 +81,7 @@ make build
 - PCM 8-bit、16-bit、24-bit、32-bit integer。
 - PCM 32-bit float 和 64-bit float。
 
-压缩 VBAN 编码、serial/text 等非音频子协议会被忽略。
+压缩 VBAN 编码、serial/text 等非音频子协议会被拒绝；通过来源过滤后，这些包会计入“错误”，不会播放。
 
 ## 播放选项
 
@@ -101,17 +93,28 @@ make build
 - `慢速`：更深缓冲，适合不稳定 Wi-Fi。
 - `非常慢`：最大缓冲，适合数据突发或不可靠的音频流。
 
-## 打包说明
+## 从源码构建
 
-`make app` 会在 `dist/` 下生成 Apple Silicon `arm64` app bundle，并用 ad-hoc 签名用于本机测试。若要公开分发 `.app`，仍需要 Developer ID 签名和 notarization。
+开发者需要 Xcode Command Line Tools（含 `clang` 和 macOS SDK），无需完整 Xcode。先克隆仓库，再在仓库根目录构建。如果已有本地仓库，直接 `cd` 到该目录并跳过克隆。以下命令构建当前源码；v0.3.13 之后的改动不包含在下载包中：
 
-`make validate-app` 只校验已经存在的 bundle，不会重新构建。公开发布前，先运行 `make validate-release-tree`，使用 Developer ID 身份打包；完成 notarization 和 stapling 后，再运行 `make validate-release VERSION=... BUILD_NUMBER=...`。
+```bash
+git clone https://github.com/XiaoLeXLDW/vban-receiver-mac.git
+cd vban-receiver-mac
+make build
+make test
+make app
+make validate-app
+```
 
-VBAN 协议本身不验证发送者身份。请仅在可信局域网中使用，并尽量设置 `来源`；主机名或 IP 会在开始接收时解析一次。
+在 Finder 中打开 `dist/VBAN Receiver.app`。`make app` 创建本机测试用的 ad-hoc 签名 bundle；`make validate-app` 只检查现有 bundle，不会重建。完整发布流程见 [发布检查清单](docs/releasing.md)。
 
-## 工具链说明
+## 菜单栏与排障
 
-本项目基于 Objective-C/AppKit，使用 `clang` 构建。构建时需要 Xcode Command Line Tools，但无需安装完整 Xcode。当前 release 是仅包含 `arm64` 架构的 Mach-O，面向 Apple Silicon，不是 Universal binary。
+关闭窗口或按 `Command + W` 会隐藏到菜单栏，接收和播放继续。点击菜单栏图标选择“显示窗口”；要完全退出，使用“退出 VBAN 接收器”或 `Command + Q`。
+
+VBAN 不验证发送者身份。请仅在可信局域网中使用，并尽量设置“来源”；主机名或 IP 在开始接收时解析一次。详细的快捷键、计数含义、日志隐私和排障步骤见 [中文 Wiki](docs/wiki.md)。
+
+文档导航和开发资料见 [文档索引](docs/README.md)。
 
 ## 许可证
 

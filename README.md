@@ -30,6 +30,8 @@
 
 ![VBAN Receiver receiving audio](docs/assets/vban-receiver-receiving-en.png)
 
+The screenshot uses a local loopback test stream and a temporary port. For normal use, send to the Mac’s LAN IP and match the port on both sides (default `6980`).
+
 ## Highlights
 
 - Native AppKit interface with Chinese and English UI.
@@ -40,28 +42,18 @@
 - Volume, mute, automatic output recovery, and latency controls.
 - Network counters for received data, missing packets, filtered packets, errors, and audio recovery/drop events.
 
-## Quick Start
+## Download and Install
 
-Requirements:
+You need **macOS 13 or later and an Apple Silicon Mac**. You do not need Xcode to use the download. The release does not include an Intel `x86_64` slice.
 
-- macOS 13 or later.
-- Apple Silicon Mac, such as M1/M2/M3/M4. The current release is not a Universal binary and does not include an Intel `x86_64` slice.
-- Xcode Command Line Tools.
+1. Open the [v0.3.13 release page](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) and download `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`, rather than GitHub's automatically generated Source code archive.
+2. Extract the ZIP and drag `VBAN Receiver.app` into Applications.
+3. Open the app. This community download is **ad-hoc signed, without Developer ID signing or notarization**. If macOS blocks it, verify the download source before following the app-specific prompts in System Settings → Privacy & Security.
+4. Configure VoiceMeeter below, then click `Start Receiving`.
 
-Build and open the app from the repository root:
+For developer verification prompts, see [Apple’s instructions for opening an app from an unknown developer](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac).
 
-```bash
-make test
-make app
-open "dist/VBAN Receiver.app"
-```
-
-For a command-line launch without the app bundle:
-
-```bash
-make build
-./.build/VBANReceiver
-```
+**Version scope:** the download is the published v0.3.13 release. Source changes after that tag are not included in the release asset.
 
 ## VoiceMeeter Setup
 
@@ -87,7 +79,7 @@ make build
 - PCM 8-bit, 16-bit, 24-bit, and 32-bit integer.
 - PCM 32-bit float and 64-bit float.
 
-Compressed VBAN codecs and serial/text subprotocols are intentionally ignored.
+Compressed VBAN codecs and serial/text subprotocols are rejected. If they pass the source filter, these packets increment Errors and are not played.
 
 ## Playback Options
 
@@ -99,17 +91,28 @@ The latency menu controls how much audio the receiver buffers before and during 
 - `Slow`: deeper buffer for unstable Wi-Fi.
 - `Very Slow`: maximum buffering for bursty or unreliable streams.
 
-## Packaging Note
+## Build from Source
 
-`make app` creates a local Apple Silicon `arm64` app bundle in `dist/` and signs it ad hoc for local testing. Public distribution still needs Developer ID signing and notarization.
+Developers need Xcode Command Line Tools, including `clang` and the macOS SDK; the full Xcode app is not required. Clone the repository, then build from its root. If you already have a checkout, start with `cd` into that directory and skip the clone command. These commands build the current source; changes after v0.3.13 are not included in the download:
 
-`make validate-app` only validates the existing bundle and never rebuilds it. Before a public release, run `make validate-release-tree`, package with a Developer ID identity, then run `make validate-release VERSION=... BUILD_NUMBER=...` after notarization and stapling.
+```bash
+git clone https://github.com/XiaoLeXLDW/vban-receiver-mac.git
+cd vban-receiver-mac
+make build
+make test
+make app
+make validate-app
+```
 
-VBAN itself does not authenticate senders. Use the receiver on a trusted LAN and set `Source` when practical; the host name or IP is resolved once when reception starts.
+Open `dist/VBAN Receiver.app` in Finder. `make app` creates an ad-hoc signed bundle for local testing; `make validate-app` checks the existing bundle without rebuilding it. See the [release checklist](docs/releasing.md) for the full release process.
 
-## Toolchain Note
+## Menu Bar and Troubleshooting
 
-This project uses Objective-C/AppKit and builds with `clang`. It requires Xcode Command Line Tools, but not the full Xcode app. The current release is a single-architecture `arm64` Mach-O binary for Apple Silicon, not a Universal binary.
+Closing the window or pressing `Command + W` hides it to the menu bar while reception and playback continue. Choose `Show Window` from the menu-bar icon to reopen it. Use `Quit VBAN Receiver` or `Command + Q` to exit completely.
+
+VBAN does not authenticate senders. Use it on a trusted LAN and set `Source` when practical; the host name or IP is resolved once when reception starts. See the [English Wiki](docs/wiki.en.md) for keyboard behavior, counters, log privacy, and troubleshooting.
+
+Find guides and development material in the [documentation index](docs/README.md).
 
 ## License
 

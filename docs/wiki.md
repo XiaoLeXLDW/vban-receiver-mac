@@ -6,6 +6,8 @@
 
 这份 Wiki 详细说明 VBAN Receiver 的每个区域、按钮、字段、状态和常见排障路径。
 
+**适用版本：**常规接收功能以已发布的 [v0.3.13](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) 为基线，并核对当前源码。源码在该标签之后的行为变化会单独标明。下载安装见 [快速入口](../README.zh-CN.md#下载并安装)。
+
 ![VBAN Receiver 使用说明](assets/vban-receiver-usage-guide.png)
 
 ## 工作原理
@@ -62,6 +64,8 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 状态颜色随状态变化：停止为灰色，等待为黄色，接收中为绿色。
 
+**v0.3.13 之后的源码改动：**启动期间显示“正在启动 / Starting”，来源解析在后台进行，界面保持响应。启动最长等待 5 秒，也可点击停止取消；失败或超时后显示错误并恢复可编辑状态。此行为不包含在 v0.3.13 下载包中。
+
 ## 输入源区域
 
 ### UDP 端口
@@ -110,7 +114,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 键盘启动/停止
 
-窗口聚焦时，按 `Return` 或 `Enter` 可以切换开始/停止接收。带 `Command`、`Control` 或 `Option` 的组合键不会触发这个切换。
+窗口聚焦且焦点不在文本编辑器或其他控件中时，按 `Return` 或 `Enter` 可以切换开始/停止接收。“开始/停止接收”按钮获得焦点时也可使用。编辑端口、流名、来源时，或音量、下拉菜单等其他控件获得焦点时，不会触发全局切换。带 `Command`、`Control` 或 `Option` 的组合键同样不会触发。
 
 ## 当前流区域
 
@@ -120,7 +124,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 源 / Source
 
-显示当前收到数据包的发送端，通常是 `IP:port`。
+显示当前收到数据包的发送端。IPv4 使用 `IP:port`；v0.3.13 之后的源码将 IPv6 显示为 `[IPv6]:port`，避免地址与端口混淆。
 
 ### 格式 / Format
 
@@ -163,6 +167,8 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 | `Medium / 中等` | 0.90 秒 | 512 | 2 | 普通 Wi-Fi 或轻微抖动 |
 | `Slow / 慢速` | 1.80 秒 | 1024 | 4 | Wi-Fi 不稳定或发送端偶发突发 |
 | `Very Slow / 非常慢` | 3.00 秒 | 2048 | 6 | 优先稳定播放，允许较高延迟 |
+
+表中的排队时长和缓冲数是保护上限，**不是固定延迟，也不是端到端实测值**。实际延迟还包含发送端、网络、起播缓冲和输出设备。这些数值不代表播放时始终保留这么多音频。
 
 切换延迟档位会写入诊断快照，不会自动停止 UDP 接收。
 
@@ -218,7 +224,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 根据 VBAN frame counter 推算缺失包数。
 
-如果收到的 frame counter 跳过了预期值，会增加缺失计数。缺口异常大时会按 1 次异常计入，避免错误数据导致计数爆炸。
+收到的 frame counter 跳过预期值时，缺失计数增加；乱序窗口内的迟到包补齐缺口后，计数会回落。它不是只增不减的累计网络丢包总数。计数按发送端、流名和音频格式分别跟踪；异常大的跳变保守地计为 1，避免计数爆炸。
 
 ### 过滤 / Filtered
 
@@ -232,7 +238,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 错误 / Errors
 
-无效 VBAN 包、UDP 接收错误、解析错误和音频输出错误会计入错误数量，并显示错误消息。
+无效 VBAN 包、UDP 接收错误、解析错误和音频输出错误会计入错误数量，并显示错误消息。压缩编码和 serial/text 等不支持的协议在解析时被拒绝，也计入错误；若包先被来源过滤拦截，则计入“过滤”。
 
 常见错误包括：
 
@@ -254,6 +260,12 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ## 菜单项
 
+### 菜单栏图标与退出
+
+点击 macOS 菜单栏中的无线音频图标，可以显示/隐藏窗口、开始/停止接收、修复输出、切换自动修复、打开日志或退出。
+
+点击窗口红色关闭按钮或按 `Command + W` 只会隐藏窗口，接收和播放继续。使用菜单栏的“显示窗口”或点击 Dock 图标重新显示。要完全停止 app，选择“退出 VBAN 接收器”或按 `Command + Q`。
+
 ### About VBAN Receiver
 
 显示版本号、构建号和作者信息。
@@ -271,6 +283,10 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 ```
 
 日志采用 JSON Lines，每一行是一个事件或快照。活动日志达到 10 MB 后轮转，保留 `diagnostics.jsonl.1` 和 `diagnostics.jsonl.2` 两代备份。
+
+### 分享日志前
+
+日志是本地诊断记录，可能包含设备名称和标识、发送端地址、流信息、时间戳及错误详情。分享前检查并遮盖能识别你的设备或网络的信息，只提供复现问题所需的时间段。诊断日志记录事件和状态，不保存音频录音。
 
 ### Repair Output
 
@@ -309,8 +325,7 @@ Dock 图标菜单提供：
 2. 确认 `Data` 是否增长。
 3. 确认 macOS 默认输出设备正确。
 4. 确认没有开启 `Mute / 静音`。
-5. 点击 `✨` 手动修复输出。
-6. 如果经常复现，开启 `Auto / 自动修复`。
+5. 点击 `✨` 手动修复输出；如果经常复现，再开启 `Auto / 自动修复`。
 
 ### 一直 Waiting / 等待中
 
@@ -332,7 +347,7 @@ Dock 图标菜单提供：
 
 ### Missing 持续增长
 
-说明 frame counter 有缺口，通常是网络丢包或发送端突发。
+说明 frame counter 出现缺口，可能来自丢包或乱序；迟到包补齐后计数可能回落。提高缓冲可改善播放连续性，但不会找回已丢失的数据包。
 
 处理方式：
 
@@ -352,4 +367,4 @@ Dock 图标菜单提供：
 
 ## 发布说明
 
-`make app` 生成 Apple Silicon `arm64` app bundle，并使用 ad-hoc 签名，适合本机测试。若要给其他人下载运行，需要 Developer ID 签名和 notarization。
+[v0.3.13 发布附件](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) 是 ad-hoc 签名的社区构建，未使用 Developer ID 签名或公证，可能被 Gatekeeper 阻止。`make app` 默认同样生成 ad-hoc 签名的本机构建。Developer ID 签名、公证和 stapling 是另一个正式分发流程，不是当前下载包已具备的属性。

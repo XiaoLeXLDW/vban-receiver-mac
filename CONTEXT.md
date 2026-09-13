@@ -1,6 +1,6 @@
-# VBAN Receiver
+# VBAN Receiver Runtime State Contract
 
-This context defines the runtime states of the VBAN audio receiver and the language used when discussing idle behavior.
+This developer reference defines the runtime states of the VBAN audio receiver and the language used when discussing idle behavior.
 
 ## Language
 

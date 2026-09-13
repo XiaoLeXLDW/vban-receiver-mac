@@ -16,6 +16,13 @@ NS_ASSUME_NONNULL_BEGIN
            streamName:(nullable NSString *)streamName
            sourceHost:(nullable NSString *)sourceHost
                 error:(NSError **)error;
+// Call on the main thread. Completion is delivered there; stop cancels pending
+// startup without calling completion. A timed-out DNS result cannot open a socket.
+- (void)startWithPort:(uint16_t)port
+          streamName:(nullable NSString *)streamName
+          sourceHost:(nullable NSString *)sourceHost
+             timeout:(NSTimeInterval)timeout
+          completion:(void (^)(BOOL started, NSError * _Nullable error))completion;
 - (void)stop;
 
 @end

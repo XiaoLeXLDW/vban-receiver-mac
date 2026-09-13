@@ -10,6 +10,7 @@
 
 @interface VBANUDPReceiver (AddressKeyTesting)
 - (NSData *)addressKeyFromSockaddr:(const struct sockaddr *)address length:(socklen_t)length;
+- (NSSet<NSData *> *)resolvedAddressesForSourceHost:(NSString *)host error:(NSError **)error;
 @end
 
 static void AssertTrue(BOOL condition, const char *message) {
@@ -17,6 +18,87 @@ static void AssertTrue(BOOL condition, const char *message) {
         fprintf(stderr, "FAIL: %s\n", message);
         exit(1);
     }
+}
+
+@interface DelayedDNSReceiver : VBANUDPReceiver
+@property (nonatomic, strong) dispatch_semaphore_t lookupEntered;
+@property (nonatomic, strong) dispatch_semaphore_t lookupRelease;
+@end
+
+@implementation DelayedDNSReceiver
+- (NSSet<NSData *> *)resolvedAddressesForSourceHost:(NSString *)host error:(NSError **)error {
+    if ([host isEqualToString:@"slow"]) {
+        dispatch_semaphore_signal(self.lookupEntered);
+        dispatch_semaphore_wait(self.lookupRelease, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+        host = @"127.0.0.1";
+    }
+    return [super resolvedAddressesForSourceHost:host error:error];
+}
+@end
+
+static void RunMainLoopFor(NSTimeInterval seconds) {
+    NSDate *end = [NSDate dateWithTimeIntervalSinceNow:seconds];
+    while (end.timeIntervalSinceNow > 0) {
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
+    }
+}
+
+static void TestAsyncStartup(void) {
+    DelayedDNSReceiver *receiver = [[DelayedDNSReceiver alloc] init];
+    receiver.lookupEntered = dispatch_semaphore_create(0);
+    receiver.lookupRelease = dispatch_semaphore_create(0);
+    __block NSUInteger completions = 0;
+    [receiver startWithPort:0 streamName:@"Stream1" sourceHost:@"slow" timeout:1
+                completion:^(BOOL started, NSError *error) { completions++; }];
+    AssertTrue(dispatch_semaphore_wait(receiver.lookupEntered,
+                   dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0,
+               "DNS runs off the calling thread");
+    __block BOOL mainQueueResponsive = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ mainQueueResponsive = YES; });
+    RunMainLoopFor(0.03);
+    AssertTrue(mainQueueResponsive && receiver.localPort == 0,
+               "main queue remains responsive during DNS lookup");
+    [receiver stop];
+    dispatch_semaphore_signal(receiver.lookupRelease);
+    RunMainLoopFor(0.05);
+    AssertTrue(completions == 0 && receiver.localPort == 0,
+               "stop cancels pending startup without opening socket");
+
+    __block NSError *timeoutError = nil;
+    [receiver startWithPort:0 streamName:@"Stream1" sourceHost:@"slow" timeout:0.03
+                completion:^(BOOL started, NSError *error) {
+        AssertTrue(NSThread.isMainThread && !started, "timeout completes on main thread");
+        completions++;
+        timeoutError = error;
+    }];
+    AssertTrue(dispatch_semaphore_wait(receiver.lookupEntered,
+                   dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0, "timeout lookup entered");
+    RunMainLoopFor(0.1);
+    AssertTrue(completions == 1 && timeoutError.code == ETIMEDOUT && receiver.localPort == 0,
+               "startup has bounded timeout");
+    dispatch_semaphore_signal(receiver.lookupRelease);
+    RunMainLoopFor(0.05);
+    AssertTrue(completions == 1 && receiver.localPort == 0,
+               "late DNS result cannot restart timed-out receiver");
+
+    [receiver startWithPort:0 streamName:@"old" sourceHost:@"slow" timeout:1
+                completion:^(BOOL started, NSError *error) { completions++; }];
+    AssertTrue(dispatch_semaphore_wait(receiver.lookupEntered,
+                   dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0, "old lookup entered");
+    __block BOOL newStarted = NO;
+    [receiver startWithPort:0 streamName:@"new" sourceHost:@"127.0.0.1" timeout:1
+                completion:^(BOOL started, NSError *error) {
+        AssertTrue(NSThread.isMainThread && error == nil, "success completes on main thread");
+        newStarted = started;
+    }];
+    RunMainLoopFor(0.1);
+    uint16_t newPort = receiver.localPort;
+    AssertTrue(newStarted && newPort > 0, "new start bypasses stale lookup");
+    dispatch_semaphore_signal(receiver.lookupRelease);
+    RunMainLoopFor(0.05);
+    AssertTrue(completions == 1 && receiver.localPort == newPort,
+               "old lookup cannot replace current receiver");
+    [receiver stop];
 }
 
 static NSData *MakePacket(NSString *streamName) {
@@ -203,6 +285,7 @@ static void TestOccupiedIPv4PortRejected(void) {
 
 int main(void) {
     @autoreleasepool {
+        TestAsyncStartup();
         TestIPv6AddressScopeKeys();
         TestOccupiedIPv4PortRejected();
         __block dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
@@ -282,6 +365,8 @@ int main(void) {
         AssertTrue(signaled, "receive ipv6 source-matched udp packet");
         AssertTrue(receivedError == nil, "no ipv6 source-matched parse error");
         AssertTrue(receivedPacket != nil, "ipv6 source-matched packet callback");
+        AssertTrue([receivedPacket.sender hasPrefix:@"[::1]:"],
+                   "IPv6 sender endpoint uses brackets");
 
         dispatch_semaphore_t beyondFirstDrain = dispatch_semaphore_create(0);
         __block NSUInteger receivedBatchCount = 0;
