@@ -1,0 +1,34 @@
+name: Validate source and community app
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Check committed inputs and documentation
+        run: |
+          make validate-release-tree
+          make validate-docs
+      - name: Run tests without audio hardware
+        run: make test-unit BUILD_DIR=.build/ci ARCH="$(uname -m)"
+      - name: Package and verify community app
+        run: |
+          source VERSION.env
+          make app BUILD_DIR=.build/ci DIST_DIR=dist/ci ARCH=arm64
+          make validate-app APP_PATH='dist/ci/VBAN Receiver.app' ARCH=arm64 EXPECTED_VERSION="$DEFAULT_VERSION" EXPECTED_BUILD_NUMBER="$DEFAULT_BUILD_NUMBER"
+          make release-archive DIST_DIR=dist/ci ARCH=arm64 RELEASE_TAG="v$DEFAULT_VERSION"
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: community-app-validation
+          path: |
+            dist/ci/release-check.*/*.zip
+            dist/ci/release-check.*/*.sha256
+          if-no-files-found: error

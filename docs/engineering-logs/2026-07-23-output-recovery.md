@@ -1,7 +1,11 @@
 # State-Diff Output Recovery and Diagnostic Log Rotation
 
 Date: 2026-07-23
-Status: Implemented and verified locally
+Status: Historical local validation record (July 2026)
+
+These results describe the original run, not current verification. The original
+record does not fully identify the hardware, macOS version, toolchain and commit;
+CPU and timing results must not be generalized to other machines.
 
 ## Goal
 
@@ -45,16 +49,6 @@ These terms are recorded in `CONTEXT.md`; the architectural choice is recorded i
 10. Added `VBAN_DIAGNOSTIC_LOG_PATH` as an isolated runtime-test hook for destructive rotation tests.
 11. Bounded cross-process lock acquisition to 100 ms per diagnostic line so a stalled peer cannot block reset or app termination indefinitely.
 12. Used monotonic uptime for packet freshness, notification stabilization, recovery cooldowns, and watchdog decisions.
-
-## Pre-Rotation Archive
-
-With no `VBANReceiver` process running, the old log was compressed to:
-
-```text
-~/Library/Logs/VBAN Receiver/diagnostics-2026-07-23-pre-rotation.jsonl.gz
-```
-
-`gzip -t` passed before the 56,966,943-byte active file was truncated. The verified archive is 658,972 bytes.
 
 ## Verification
 

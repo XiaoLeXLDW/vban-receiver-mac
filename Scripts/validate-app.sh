@@ -35,6 +35,10 @@ if [[ ! -x "$binary_path" ]]; then
     fail "app executable is missing or is not executable: $binary_path"
 fi
 
+for resource in AppIcon.icns LICENSE.txt; do
+    [[ -s "$app_path/Contents/Resources/$resource" ]] || fail "required resource missing: $resource"
+done
+
 plutil -lint "$info_plist"
 
 actual_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$info_plist" 2>/dev/null)" ||
@@ -53,6 +57,11 @@ actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString'
     fail "CFBundleShortVersionString is missing from $info_plist"
 actual_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist" 2>/dev/null)" ||
     fail "CFBundleVersion is missing from $info_plist"
+minimum_os="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist" 2>/dev/null)" ||
+    fail "LSMinimumSystemVersion is missing from $info_plist"
+if [[ ! "$minimum_os" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    fail "invalid LSMinimumSystemVersion '$minimum_os'."
+fi
 
 if [[ -n "$expected_version" && "$actual_version" != "$expected_version" ]]; then
     fail "expected version '$expected_version', found '$actual_version'."
@@ -72,13 +81,35 @@ for architecture in "${architecture_list[@]}"; do
 done
 lipo "$binary_path" -verify_arch "${architecture_list[@]}"
 
+# Compilation flags alone do not constrain the final link deployment target.
+# Verify the load command so an app advertising macOS 13 cannot require 15.
+for architecture in "${architecture_list[@]}"; do
+    build_commands="$(xcrun vtool -arch "$architecture" -show-build "$binary_path")" ||
+        fail "could not inspect the $architecture Mach-O deployment target."
+    binary_minimum_os="$(awk '$1 == "minos" { print $2; exit }' <<< "$build_commands")"
+    if [[ ! "$binary_minimum_os" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+        fail "missing or invalid $architecture Mach-O minimum OS '$binary_minimum_os'."
+    fi
+    if ! awk -v required="$binary_minimum_os" -v advertised="$minimum_os" '
+        BEGIN {
+            split(required, r, "."); split(advertised, a, ".");
+            for (i = 1; i <= 3; i++) {
+                if ((r[i] + 0) < (a[i] + 0)) exit 0;
+                if ((r[i] + 0) > (a[i] + 0)) exit 1;
+            }
+            exit 0;
+        }'; then
+        fail "$architecture executable requires macOS $binary_minimum_os but Info.plist advertises $minimum_os."
+    fi
+done
+
 codesign --verify --deep --strict --verbose=2 "$app_path"
 signature_details="$(codesign -dvvv "$app_path" 2>&1)" ||
     fail "could not inspect the code signature."
 
 if [[ "$strict_release" == "1" ]]; then
     if grep -q '^Signature=adhoc$' <<< "$signature_details"; then
-        fail "the app has an ad-hoc signature; public releases require a Developer ID Application signature."
+        fail "the app has an ad-hoc signature; the strict distribution gate requires a Developer ID Application signature."
     fi
     if ! grep -q '^Authority=Developer ID Application:' <<< "$signature_details"; then
         fail "the app is not signed with a Developer ID Application certificate."
@@ -91,12 +122,12 @@ if [[ "$strict_release" == "1" ]]; then
         fail "xcrun is required for notarization validation."
     fi
     xcrun stapler validate "$app_path"
-    echo "Public release validation passed: Developer ID, Gatekeeper, and stapled notarization verified."
+    echo "Strict distribution validation passed: Developer ID, Gatekeeper, and stapled notarization verified."
 else
     if grep -q '^Signature=adhoc$' <<< "$signature_details"; then
-        echo "Local app validation passed (ad-hoc signature; not approved for public distribution)."
+        echo "App validation passed (ad-hoc community build; not Developer ID signed or notarized)."
     else
-        echo "Local app validation passed (signature integrity only; use 'make validate-release' for public distribution)."
+        echo "App validation passed (signature integrity only; use 'make validate-release' to verify Developer ID distribution)."
     fi
 fi
 

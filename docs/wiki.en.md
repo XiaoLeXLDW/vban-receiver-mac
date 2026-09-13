@@ -6,6 +6,8 @@
 
 This wiki documents every area, button, field, status, menu item, and common troubleshooting path in VBAN Receiver.
 
+**Version scope:** standard receiving behavior uses published [v0.3.13](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) as its baseline and is checked against current source. Behavior changes in source after that tag are identified separately. For installation, use the [download guide](../README.md#download-and-install).
+
 ![VBAN Receiver quick start](assets/vban-receiver-usage-guide-en.png)
 
 ## How It Works
@@ -62,6 +64,8 @@ The status pill in the top-right corner includes a color dot and status text:
 
 The dot is gray when stopped, yellow while waiting, and green while receiving.
 
+**Source change after v0.3.13:** startup shows `Starting / 正在启动` while source resolution runs in the background and the interface remains responsive. Startup waits up to 5 seconds; Stop cancels it. Failure or timeout shows an error and makes fields editable again. This behavior is not included in the v0.3.13 download.
+
 ## Input Area
 
 ### UDP Port
@@ -110,7 +114,7 @@ The same button stops the receiver while it is running. When clicked:
 
 ### Keyboard Start/Stop
 
-When the window is focused, `Return` or `Enter` toggles start/stop. Shortcuts using `Command`, `Control`, or `Option` are ignored by this toggle.
+With the window focused, `Return` or `Enter` toggles start/stop unless you are editing a text field or another control has focus. The Start/Stop button itself permits the toggle. Editing Port, Stream, or Source, or focusing controls such as volume or a dropdown, does not trigger the global toggle. Combinations using `Command`, `Control`, or `Option` also do not trigger it.
 
 ## Current Stream Area
 
@@ -120,7 +124,7 @@ Shows the stream name from the latest accepted VBAN packet. If the packet has no
 
 ### Source
 
-Shows the sender of the latest accepted packet, usually as `IP:port`.
+Shows the sender of the latest accepted packet. IPv4 uses `IP:port`; source after v0.3.13 formats IPv6 as `[IPv6]:port` to distinguish the address from the port.
 
 ### Format
 
@@ -163,6 +167,8 @@ The latency menu controls playback buffering. Faster profiles reduce latency but
 | `Medium / 中等` | 0.90 s | 512 | 2 | Normal Wi-Fi or light jitter |
 | `Slow / 慢速` | 1.80 s | 1024 | 4 | Unstable Wi-Fi or bursty sender |
 | `Very Slow / 非常慢` | 3.00 s | 2048 | 6 | Maximum stability, higher latency |
+
+Queued duration and buffer counts are protective limits, **not fixed latency or measured end-to-end delay**. Actual delay also depends on the sender, network, startup buffering, and output device. These limits do not mean that playback always retains that much audio.
 
 Changing the latency profile writes a diagnostic snapshot. It does not stop UDP receiving.
 
@@ -218,7 +224,7 @@ Number of valid VBAN AUDIO packets accepted after filters.
 
 Estimated missing packet count based on VBAN frame counters.
 
-If the received frame counter skips the expected value, Missing increases. Very large unexpected gaps are counted conservatively to avoid runaway counters from bad data.
+Missing increases when a frame counter skips expected values and can decrease when late packets fill those gaps within the reorder window. It is not a monotonically increasing total of packets lost on the network. Sequences are tracked separately by sender, stream name, and audio format; a very large discontinuity conservatively adds 1.
 
 ### Filtered
 
@@ -232,7 +238,7 @@ If `Filtered` grows but `Data` does not:
 
 ### Errors
 
-Invalid VBAN packets, UDP receive errors, parse errors, and audio output errors increment this counter and show an error message.
+Invalid VBAN packets, UDP receive errors, parse errors, and audio output errors increment this counter and show an error message. Unsupported compressed codecs and serial/text protocols are rejected during parsing and count as Errors; packets rejected earlier by the source filter count as Filtered instead.
 
 Common causes:
 
@@ -254,6 +260,12 @@ Network quality summary:
 
 ## Menu Items
 
+### Menu-Bar Icon and Quitting
+
+Click the radio-wave icon in the macOS menu bar to show/hide the window, start/stop receiving, repair output, toggle automatic repair, open logs, or quit.
+
+The red close button and `Command + W` hide the window while reception and playback continue. Choose `Show Window` in the menu-bar menu or click the Dock icon to reopen it. Choose `Quit VBAN Receiver` or press `Command + Q` to exit the app completely.
+
 ### About VBAN Receiver
 
 Shows version, build number, and credits.
@@ -271,6 +283,10 @@ Opens the diagnostic log location:
 ```
 
 The log uses JSON Lines. Each line is one event or snapshot. The active file rotates at 10 MB and keeps `diagnostics.jsonl.1` and `diagnostics.jsonl.2` as two backups.
+
+### Before Sharing Logs
+
+These local diagnostic records may include device names and identifiers, sender addresses, stream information, timestamps, and error details. Review and redact information that identifies your devices or network, and share only the interval needed to reproduce the issue. The diagnostic log records events and state, not audio recordings.
 
 ### Repair Output
 
@@ -309,8 +325,7 @@ Unsupported:
 2. Check whether `Data` is increasing.
 3. Confirm the macOS default output device.
 4. Confirm `Mute` is not enabled.
-5. Click `✨` to manually repair output.
-6. If it happens often, enable `Auto`.
+5. Click `✨` to manually repair output; enable `Auto` if the issue recurs.
 
 ### Stuck on Waiting
 
@@ -332,7 +347,7 @@ Try:
 
 ### Missing Keeps Increasing
 
-Frame counters have gaps, usually because of packet loss or sender bursts.
+Frame counters have gaps, which can reflect packet loss or reordering; late arrivals may reduce the count. More buffering may improve playback continuity, but it cannot recover lost packets.
 
 Try:
 
@@ -352,4 +367,4 @@ Try:
 
 ## Distribution
 
-`make app` creates an Apple Silicon `arm64` app bundle with ad-hoc signing for local testing. Public distribution to other Macs should use Developer ID signing and notarization.
+The [v0.3.13 release asset](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) is an ad-hoc signed community build without Developer ID signing or notarization, so Gatekeeper may block it. `make app` also defaults to ad-hoc signing for local builds. Developer ID signing, notarization, and stapling form a separate distribution workflow; they are not properties of the current download.

@@ -33,6 +33,7 @@ static uint64_t VBANUDPMonotonicNanoseconds(void) {
 @property (nonatomic, assign) int socketFD;
 @property (atomic, assign, readwrite) uint16_t localPort;
 @property (atomic, assign) BOOL stopRequested;
+@property (atomic, strong, nullable) NSObject *pendingStart;
 
 @end
 
@@ -50,6 +51,49 @@ static uint64_t VBANUDPMonotonicNanoseconds(void) {
 
 - (void)dealloc {
     [self stop];
+}
+
+- (void)startWithPort:(uint16_t)port
+          streamName:(NSString *)streamName
+          sourceHost:(NSString *)sourceHost
+             timeout:(NSTimeInterval)timeout
+          completion:(void (^)(BOOL, NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Asynchronous startup must be requested on the main thread");
+    [self stop];
+    NSObject *request = [[NSObject alloc] init];
+    self.pendingStart = request;
+    NSString *host = [sourceHost stringByTrimmingCharactersInSet:
+                                   NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *stream = [streamName copy];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (self.pendingStart != request) {
+            return;
+        }
+        self.pendingStart = nil;
+        completion(NO, [NSError errorWithDomain:NSPOSIXErrorDomain code:ETIMEDOUT
+                                      userInfo:@{NSLocalizedDescriptionKey:
+                                                     @"Source host lookup timed out"}]);
+    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        NSSet<NSData *> *addresses = host.length
+            ? [self resolvedAddressesForSourceHost:host error:&error] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.pendingStart != request) {
+                return;
+            }
+            self.pendingStart = nil;
+            if (host.length && !addresses) {
+                completion(NO, error);
+                return;
+            }
+            NSError *startError = nil;
+            BOOL started = [self startWithPort:port streamName:stream
+                              sourceAddresses:addresses error:&startError];
+            completion(started, startError);
+        });
+    });
 }
 
 - (BOOL)startWithPort:(uint16_t)port
@@ -77,6 +121,15 @@ static uint64_t VBANUDPMonotonicNanoseconds(void) {
         }
     }
 
+    return [self startWithPort:port streamName:streamName
+              sourceAddresses:sourceAddresses error:error];
+}
+
+- (BOOL)startWithPort:(uint16_t)port
+          streamName:(NSString *)streamName
+     sourceAddresses:(NSSet<NSData *> *)sourceAddresses
+               error:(NSError **)error {
+    [self stop];
     int fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) {
         if (error) {
@@ -257,6 +310,7 @@ static uint64_t VBANUDPMonotonicNanoseconds(void) {
 }
 
 - (void)stop {
+    self.pendingStart = nil;
     self.stopRequested = YES;
 
     __block dispatch_group_t cancellationGroup = nil;
@@ -502,7 +556,9 @@ static uint64_t VBANUDPMonotonicNanoseconds(void) {
     if (hostOut) {
         *hostOut = hostString;
     }
-    return serviceString.length ? [NSString stringWithFormat:@"%@:%@", hostString, serviceString] : hostString;
+    NSString *endpointHost = [hostString containsString:@":"]
+        ? [NSString stringWithFormat:@"[%@]", hostString] : hostString;
+    return serviceString.length ? [NSString stringWithFormat:@"%@:%@", endpointHost, serviceString] : hostString;
 }
 
 - (NSError *)posixError:(NSString *)prefix {

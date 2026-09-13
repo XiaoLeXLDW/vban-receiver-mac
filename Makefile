@@ -1,11 +1,12 @@
 APP_NAME := VBAN Receiver
 BINARY_NAME := VBANReceiver
-BUILD_DIR := .build
-DIST_DIR := dist
+BUILD_DIR ?= .build
+DIST_DIR ?= dist
 APP_PATH ?= $(DIST_DIR)/$(APP_NAME).app
 ARCH ?= arm64
-VERSION ?= 0.3.13
-BUILD_NUMBER ?= 17
+include VERSION.env
+VERSION ?= $(DEFAULT_VERSION)
+BUILD_NUMBER ?= $(DEFAULT_BUILD_NUMBER)
 EXPECTED_VERSION ?=
 EXPECTED_BUILD_NUMBER ?=
 # Validation metadata is opt-in: EXPECTED_* always wins, while VERSION and
@@ -25,13 +26,16 @@ CFLAGS := $(ARCH_FLAGS) -fobjc-arc -O2 -mmacosx-version-min=13.0 -I Sources/VBAN
 APP_FRAMEWORKS := -framework Cocoa -framework AudioToolbox -framework CoreAudio
 TEST_FRAMEWORKS := -framework Foundation
 
-.PHONY: build app test perf-idle validate-app validate-release validate-release-tree clean
+.PHONY: build app test test-unit perf-idle validate-app validate-release validate-release-tree clean
 
 build:
 	mkdir -p "$(BUILD_DIR)"
 	clang $(CFLAGS) $(SOURCES) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/$(BINARY_NAME)"
 
-test:
+test: test-unit
+
+# Socket and mocked audio-policy tests; no live audio output device required.
+test-unit:
 	mkdir -p "$(BUILD_DIR)"
 	clang $(CFLAGS) -DVBAN_PACKET_TEST $(PACKET_TEST_SOURCES) $(TEST_FRAMEWORKS) -o "$(BUILD_DIR)/vban_packet_tests"
 	"$(BUILD_DIR)/vban_packet_tests"
@@ -47,7 +51,7 @@ test:
 	"$(BUILD_DIR)/vban_audio_player_policy_tests"
 
 app: build
-	SKIP_BUILD=1 VERSION="$(VERSION)" BUILD_NUMBER="$(BUILD_NUMBER)" ARCH="$(ARCH)" ./Scripts/package-app.sh
+	SKIP_BUILD=1 BUILD_DIR="$(abspath $(BUILD_DIR))" BUILD_BIN="$(abspath $(BUILD_DIR))/$(BINARY_NAME)" APP_DIR="$(APP_PATH)" VERSION="$(VERSION)" BUILD_NUMBER="$(BUILD_NUMBER)" ARCH="$(ARCH)" ./Scripts/package-app.sh
 
 perf-idle: app
 	bash ./Scripts/measure-idle-cpu.sh "$(APP_PATH)"
@@ -60,7 +64,7 @@ validate-app:
 		EXPECTED_VERSION="$(VALIDATION_EXPECTED_VERSION)" EXPECTED_BUILD_NUMBER="$(VALIDATION_EXPECTED_BUILD_NUMBER)" \
 		STRICT_RELEASE=0 bash ./Scripts/validate-app.sh "$(APP_PATH)"
 
-# Public distribution gate. This is also read-only and requires explicit
+# Strict Developer ID distribution gate. Read-only; requires explicit
 # expected metadata plus a Developer ID signature, Gatekeeper acceptance, and
 # a stapled notarization ticket.
 validate-release:
@@ -75,3 +79,13 @@ validate-release-tree:
 
 clean:
 	rm -rf "$(BUILD_DIR)" "$(DIST_DIR)"
+
+.PHONY: validate-docs release-archive
+validate-docs:
+	python3 Scripts/validate-doc-links.py
+
+# Does not publish. Requires an explicit RELEASE_TAG and matching app metadata.
+release-archive:
+	APP_DIR="$(APP_PATH)" ARCH="$(ARCH)" RELEASE_TAG="$(RELEASE_TAG)" \
+		EXPECTED_VERSION="$(VERSION)" EXPECTED_BUILD_NUMBER="$(BUILD_NUMBER)" \
+		ARCHIVE_DIR="$(DIST_DIR)" bash Scripts/package-release.sh

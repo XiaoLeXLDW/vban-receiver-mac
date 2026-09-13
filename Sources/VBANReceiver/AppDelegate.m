@@ -2015,6 +2015,9 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (NSString *)stateTextForKind:(ReceiverStatusKind)kind fallback:(NSString *)state {
+    if ([state isEqualToString:@"Starting"]) {
+        return Localized(self.language, @"正在启动", @"Starting");
+    }
     switch (kind) {
         case ReceiverStatusKindStopped:
             return Localized(self.language, @"未接收", @"Stopped");
@@ -2835,6 +2838,9 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         }
     };
     self.receiver.stateHandler = ^(NSString *state) {
+        if ([state isEqualToString:@"Stopped"]) {
+            return; // Start completion and stopPressed own the UI lifecycle.
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!weakSelf
                 || weakSelf.receiverSessionGeneration != generation
@@ -2846,28 +2852,37 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
         });
     };
 
-    NSError *error = nil;
-    BOOL started = [self.receiver startWithPort:portValue
-                                     streamName:self.dashboard.streamValue
-                                     sourceHost:self.dashboard.sourceValue
-                                          error:&error];
-    if (!started) {
-        [self updateErrorMessage:error.localizedDescription ?: Localized(self.currentLanguage, @"无法启动接收器", @"Cannot start receiver")];
-        self.running = NO;
-        self.receiverStats = nil;
-        [self clearAudioSessionHandlers];
-        self.stateMessage = @"Stopped";
-        [self refreshState];
-        [self updatePresentationActivity];
-        return;
-    }
-
     self.running = YES;
-    self.stateMessage = @"Listening";
-    [self.audioPlayer writeDiagnosticSnapshot:@"receiver-started"];
-    [self applyCurrentErrorMessage];
+    self.stateMessage = @"Starting";
     [self refreshState];
     [self updatePresentationActivity];
+    [self.receiver startWithPort:portValue
+                     streamName:self.dashboard.streamValue
+                     sourceHost:self.dashboard.sourceValue
+                        timeout:5.0
+                     completion:^(BOOL started, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || self.receiverSessionGeneration != generation || self.receiverStats != stats) {
+            return;
+        }
+        if (!started) {
+            [self updateErrorMessage:error.localizedDescription ?: Localized(self.currentLanguage, @"无法启动接收器", @"Cannot start receiver")];
+            self.running = NO;
+            self.receiverStats = nil;
+            [self clearAudioSessionHandlers];
+            self.stateMessage = @"Stopped";
+            [self refreshState];
+            [self updatePresentationActivity];
+            return;
+        }
+
+        self.running = YES;
+        self.stateMessage = @"Listening";
+        [self.audioPlayer writeDiagnosticSnapshot:@"receiver-started"];
+        [self applyCurrentErrorMessage];
+        [self refreshState];
+        [self updatePresentationActivity];
+    }];
 }
 
 - (void)latencyChanged:(id)sender {
