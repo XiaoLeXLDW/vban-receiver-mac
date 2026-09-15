@@ -30,14 +30,14 @@
 
 需要 **macOS 13 或更高版本、Apple Silicon Mac**。下载使用不需要 Xcode；发布附件不包含 Intel `x86_64` 架构。
 
-1. 打开 [v0.3.14 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14)，下载 `VBAN-Receiver-v0.3.14-build18-arm64-macos.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
+1. 打开 [v0.4.1 build 25 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.4.1)，下载 `VBAN-Receiver-v0.4.1-build25-arm64-macos.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
 2. 解压后将 `VBAN Receiver.app` 拖入“应用程序”。
 3. 打开 app。该社区附件使用 **ad-hoc 签名，尚未使用 Developer ID 签名或公证**。如果 macOS 阻止打开，请在确认下载来源后，按“系统设置 → 隐私与安全性”中的提示允许该 app 打开。
 4. 按下面的 VoiceMeeter 设置发送音频，再点击“开始接收”。
 
 遇到开发者验证提示时，请参阅 [Apple 官方打开说明](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac)。
 
-**版本范围：**下载入口对应已发布的 v0.3.14。该标签之后的源码改动不包含在此发布附件中。
+**版本范围：**v0.4.1 build 25 是保持原样的历史二进制归档，完整对应源码快照未保留，选择前请阅读发布说明。本分支源码及手册对应的 [v0.3.14](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) 仍可下载；其中后来增加的源码修复没有重新编译进这个 0.4.1 原包。
 
 ![VBAN Receiver 主界面](docs/assets/vban-receiver-app.png)
 
