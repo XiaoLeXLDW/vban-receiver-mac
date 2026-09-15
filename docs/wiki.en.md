@@ -6,7 +6,7 @@
 
 This wiki documents every area, button, field, status, menu item, and common troubleshooting path in VBAN Receiver.
 
-**Version scope:** standard receiving behavior uses published [v0.3.13](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) as its baseline and is checked against current source. Behavior changes in source after that tag are identified separately. For installation, use the [download guide](../README.md#download-and-install).
+**Version scope:** standard receiving behavior uses published [v0.3.14](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) as its baseline and is checked against current source. For installation, use the [download guide](../README.md#download-and-install).
 
 ![VBAN Receiver quick start](assets/vban-receiver-usage-guide-en.png)
 
@@ -64,7 +64,7 @@ The status pill in the top-right corner includes a color dot and status text:
 
 The dot is gray when stopped, yellow while waiting, and green while receiving.
 
-**Source change after v0.3.13:** startup shows `Starting / 正在启动` while source resolution runs in the background and the interface remains responsive. Startup waits up to 5 seconds; Stop cancels it. Failure or timeout shows an error and makes fields editable again. This behavior is not included in the v0.3.13 download.
+**Startup:** startup shows `Starting / 正在启动` while source resolution runs in the background and the interface remains responsive. Startup waits up to 5 seconds; Stop cancels it. Failure or timeout shows an error and makes fields editable again.
 
 ## Input Area
 
@@ -124,7 +124,7 @@ Shows the stream name from the latest accepted VBAN packet. If the packet has no
 
 ### Source
 
-Shows the sender of the latest accepted packet. IPv4 uses `IP:port`; source after v0.3.13 formats IPv6 as `[IPv6]:port` to distinguish the address from the port.
+Shows the sender of the latest accepted packet. IPv4 uses `IP:port`; IPv6 uses `[IPv6]:port` to distinguish the address from the port.
 
 ### Format
 
@@ -367,4 +367,4 @@ Try:
 
 ## Distribution
 
-The [v0.3.13 release asset](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) is an ad-hoc signed community build without Developer ID signing or notarization, so Gatekeeper may block it. `make app` also defaults to ad-hoc signing for local builds. Developer ID signing, notarization, and stapling form a separate distribution workflow; they are not properties of the current download.
+The [v0.3.14 release asset](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) is an ad-hoc signed community build without Developer ID signing or notarization, so Gatekeeper may block it. `make app` also defaults to ad-hoc signing for local builds. Developer ID signing, notarization, and stapling form a separate distribution workflow; they are not properties of the current download.

@@ -30,14 +30,14 @@
 
 需要 **macOS 13 或更高版本、Apple Silicon Mac**。下载使用不需要 Xcode；发布附件不包含 Intel `x86_64` 架构。
 
-1. 打开 [v0.3.13 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13)，下载 `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
+1. 打开 [v0.3.14 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14)，下载 `VBAN-Receiver-v0.3.14-build18-arm64-macos.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
 2. 解压后将 `VBAN Receiver.app` 拖入“应用程序”。
 3. 打开 app。该社区附件使用 **ad-hoc 签名，尚未使用 Developer ID 签名或公证**。如果 macOS 阻止打开，请在确认下载来源后，按“系统设置 → 隐私与安全性”中的提示允许该 app 打开。
 4. 按下面的 VoiceMeeter 设置发送音频，再点击“开始接收”。
 
 遇到开发者验证提示时，请参阅 [Apple 官方打开说明](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac)。
 
-**版本范围：**下载入口对应已发布的 v0.3.13。该标签之后的源码改动不包含在此发布附件中。
+**版本范围：**下载入口对应已发布的 v0.3.14。该标签之后的源码改动不包含在此发布附件中。
 
 ![VBAN Receiver 主界面](docs/assets/vban-receiver-app.png)
 
@@ -95,7 +95,7 @@
 
 ## 从源码构建
 
-开发者需要 Xcode Command Line Tools（含 `clang` 和 macOS SDK），无需完整 Xcode。先克隆仓库，再在仓库根目录构建。如果已有本地仓库，直接 `cd` 到该目录并跳过克隆。以下命令构建当前源码；v0.3.13 之后的改动不包含在下载包中：
+开发者需要 Xcode Command Line Tools（含 `clang` 和 macOS SDK），无需完整 Xcode。先克隆仓库，再在仓库根目录构建。如果已有本地仓库，直接 `cd` 到该目录并跳过克隆。以下命令构建当前源码；v0.3.14 之后的改动不包含在下载包中：
 
 ```bash
 git clone https://github.com/XiaoLeXLDW/vban-receiver-mac.git

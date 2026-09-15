@@ -6,7 +6,7 @@
 
 这份 Wiki 详细说明 VBAN Receiver 的每个区域、按钮、字段、状态和常见排障路径。
 
-**适用版本：**常规接收功能以已发布的 [v0.3.13](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) 为基线，并核对当前源码。源码在该标签之后的行为变化会单独标明。下载安装见 [快速入口](../README.zh-CN.md#下载并安装)。
+**适用版本：**常规接收功能以已发布的 [v0.3.14](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) 为基线，并核对当前源码。下载安装见 [快速入口](../README.zh-CN.md#下载并安装)。
 
 ![VBAN Receiver 使用说明](assets/vban-receiver-usage-guide.png)
 
@@ -64,7 +64,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 状态颜色随状态变化：停止为灰色，等待为黄色，接收中为绿色。
 
-**v0.3.13 之后的源码改动：**启动期间显示“正在启动 / Starting”，来源解析在后台进行，界面保持响应。启动最长等待 5 秒，也可点击停止取消；失败或超时后显示错误并恢复可编辑状态。此行为不包含在 v0.3.13 下载包中。
+**启动状态：**启动期间显示“正在启动 / Starting”，来源解析在后台进行，界面保持响应。启动最长等待 5 秒，也可点击停止取消；失败或超时后显示错误并恢复可编辑状态。
 
 ## 输入源区域
 
@@ -124,7 +124,7 @@ lipo -info "dist/VBAN Receiver.app/Contents/MacOS/VBANReceiver"
 
 ### 源 / Source
 
-显示当前收到数据包的发送端。IPv4 使用 `IP:port`；v0.3.13 之后的源码将 IPv6 显示为 `[IPv6]:port`，避免地址与端口混淆。
+显示当前收到数据包的发送端。IPv4 使用 `IP:port`；IPv6 显示为 `[IPv6]:port`，避免地址与端口混淆。
 
 ### 格式 / Format
 
@@ -367,4 +367,4 @@ Dock 图标菜单提供：
 
 ## 发布说明
 
-[v0.3.13 发布附件](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) 是 ad-hoc 签名的社区构建，未使用 Developer ID 签名或公证，可能被 Gatekeeper 阻止。`make app` 默认同样生成 ad-hoc 签名的本机构建。Developer ID 签名、公证和 stapling 是另一个正式分发流程，不是当前下载包已具备的属性。
+[v0.3.14 发布附件](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) 是 ad-hoc 签名的社区构建，未使用 Developer ID 签名或公证，可能被 Gatekeeper 阻止。`make app` 默认同样生成 ad-hoc 签名的本机构建。Developer ID 签名、公证和 stapling 是另一个正式分发流程，不是当前下载包已具备的属性。

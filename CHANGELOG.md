@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.3.14 - 2026-09-16
+
 - Show “Starting / 正在启动” in the status pill while the source hostname is being resolved, without changing the existing Waiting labels.
 - Mark development packages with their architecture and source commit, and include build provenance in the app and About dialog.
 

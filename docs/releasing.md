@@ -1,7 +1,7 @@
 # Building and releasing
 
 [`VERSION.env`](../VERSION.env) is the single committed target for the numeric
-version and build number. It currently records 0.3.13 (17). This does not make
+version and build number. It currently records 0.3.14 (18). This does not make
 subsequent source changes a new release. Published downloads are listed on
 [GitHub Releases](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases).
 
@@ -52,13 +52,13 @@ before archiving. Always distribute the ZIP and its matching `.sha256` together.
 5. Build and archive with explicit release identity as shown below. Upload only
    the verified output and checksum to the new release, stating signature status.
 
-For example, after committing 0.3.14 / build 18 in `VERSION.env` and creating
-`v0.3.14` on that commit (example values, not a current release):
+For example, after committing 0.3.15 / build 19 in `VERSION.env` and creating
+`v0.3.15` on that commit (example values, not a current release):
 
 ```sh
-make app BUILD_KIND=release RELEASE_TAG=v0.3.14 DIST_DIR=dist/release-0.3.14
-make validate-app APP_PATH='dist/release-0.3.14/VBAN Receiver.app' EXPECTED_VERSION=0.3.14 EXPECTED_BUILD_NUMBER=18
-make release-archive BUILD_KIND=release RELEASE_TAG=v0.3.14 DIST_DIR=dist/release-0.3.14
+make app BUILD_KIND=release RELEASE_TAG=v0.3.15 DIST_DIR=dist/release-0.3.15
+make validate-app APP_PATH='dist/release-0.3.15/VBAN Receiver.app' EXPECTED_VERSION=0.3.15 EXPECTED_BUILD_NUMBER=19
+make release-archive BUILD_KIND=release RELEASE_TAG=v0.3.15 DIST_DIR=dist/release-0.3.15
 ```
 
 Release mode requires a clean checkout, numeric metadata matching `VERSION.env`,
