@@ -28,14 +28,14 @@
 
 You need **macOS 13 or later and an Apple Silicon Mac**. You do not need Xcode to use the download. The release does not include an Intel `x86_64` slice.
 
-1. Open the [v0.3.14 release page](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14) and download `VBAN-Receiver-v0.3.14-build18-arm64-macos.zip`, rather than GitHub's automatically generated Source code archive.
+1. Open the [v0.4.1 build 25 release page](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.4.1) and download `VBAN-Receiver-v0.4.1-build25-arm64-macos.zip`, rather than GitHub's automatically generated Source code archive.
 2. Extract the ZIP and drag `VBAN Receiver.app` into Applications.
 3. Open the app. This community download is **ad-hoc signed, without Developer ID signing or notarization**. If macOS blocks it, verify the download source before following the app-specific prompts in System Settings → Privacy & Security.
 4. Configure VoiceMeeter below, then click `Start Receiving`.
 
 For developer verification prompts, see [Apple’s instructions for opening an app from an unknown developer](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac).
 
-**Version scope:** the download is the published v0.3.14 release. Source changes after that tag are not included in the release asset.
+**Version scope:** v0.4.1 build 25 is an unchanged historical binary archive; its complete matching source snapshot is unavailable. Read its release notes before choosing it. The later source fixes and source-based manual on this branch correspond to [v0.3.14](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.14), which remains available; those fixes were not rebuilt into the archived 0.4.1 package.
 
 ![VBAN Receiver main window](docs/assets/vban-receiver-app-en.png)
 
