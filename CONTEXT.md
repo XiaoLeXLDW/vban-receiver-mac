@@ -12,6 +12,10 @@ _Avoid_: Not receiving, inactive
 The receiver is not listening for VBAN packets and no audio is being played.
 _Avoid_: Waiting, idle receiver
 
+**Starting**:
+The source hostname is being resolved before the UDP listener is opened. The UI remains responsive and reception can be cancelled. Failure or the five-second timeout returns to Stopped; a successful start moves to Waiting until matching packets arrive.
+_Avoid_: Waiting, Listening (before socket startup)
+
 **Waiting**:
 The receiver is listening for matching VBAN packets, but none have arrived recently.
 _Avoid_: Stopped, receiving

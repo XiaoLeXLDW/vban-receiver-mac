@@ -13,22 +13,30 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - name: Check committed inputs and documentation
         run: |
           make validate-release-tree
           make validate-docs
-      - name: Run tests without audio hardware
-        run: make test-unit BUILD_DIR=.build/ci ARCH="$(uname -m)"
-      - name: Package and verify community app
+      - name: Test application logic and packaging without audio hardware
+        run: make test-unit test-packaging BUILD_DIR=.build/ci ARCH="$(uname -m)"
+      - name: Package and verify build identity
         run: |
           source VERSION.env
-          make app BUILD_DIR=.build/ci DIST_DIR=dist/ci ARCH=arm64
-          make validate-app APP_PATH='dist/ci/VBAN Receiver.app' ARCH=arm64 EXPECTED_VERSION="$DEFAULT_VERSION" EXPECTED_BUILD_NUMBER="$DEFAULT_BUILD_NUMBER"
-          make release-archive DIST_DIR=dist/ci ARCH=arm64 RELEASE_TAG="v$DEFAULT_VERSION"
+          kind=development
+          tag=''
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            kind=release
+            tag="$GITHUB_REF_NAME"
+          fi
+          make app BUILD_DIR=.build/ci DIST_DIR=dist/ci ARCH=arm64 BUILD_KIND="$kind" RELEASE_TAG="$tag"
+          EXPECTED_BUILD_KIND="$kind" EXPECTED_COMMIT="$GITHUB_SHA" make validate-app APP_PATH='dist/ci/VBAN Receiver.app' ARCH=arm64 EXPECTED_VERSION="$DEFAULT_VERSION" EXPECTED_BUILD_NUMBER="$DEFAULT_BUILD_NUMBER"
+          make archive DIST_DIR=dist/ci ARCH=arm64 BUILD_KIND="$kind" RELEASE_TAG="$tag"
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: community-app-validation
+          name: validated-app-arm64-${{ github.sha }}
           path: |
-            dist/ci/release-check.*/*.zip
-            dist/ci/release-check.*/*.sha256
+            dist/ci/archive-check.*/*.zip
+            dist/ci/archive-check.*/*.sha256
           if-no-files-found: error

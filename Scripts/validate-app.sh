@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_path="${1:-dist/VBAN Receiver.app}"
 app_name="${APP_NAME:-VBAN Receiver}"
 binary_name="${BINARY_NAME:-VBANReceiver}"
@@ -40,6 +41,11 @@ for resource in AppIcon.icns LICENSE.txt; do
 done
 
 plutil -lint "$info_plist"
+if [[ "$strict_release" == 1 ]]; then
+    EXPECTED_BUILD_KIND=release python3 -B "$ROOT/Scripts/build-metadata.py" validate "$app_path" --current-source
+else
+    python3 -B "$ROOT/Scripts/build-metadata.py" validate "$app_path" --allow-legacy
+fi
 
 actual_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$info_plist" 2>/dev/null)" ||
     fail "CFBundleName is missing from $info_plist"

@@ -1,89 +1,105 @@
 # Building and releasing
 
-The committed macOS baseline is **0.3.13 (build 17)**, defined once in
-[`VERSION.env`](../VERSION.env). Unreleased working-tree features and local test
-builds are not proof of a published release. The authoritative published versions
-and downloadable assets are on [GitHub Releases](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases).
+[`VERSION.env`](../VERSION.env) is the single committed target for the numeric
+version and build number. It currently records 0.3.14 (18). This does not make
+subsequent source changes a new release. Published downloads are listed on
+[GitHub Releases](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases).
 
-## Development and CI
+## Development builds
 
-On macOS 13 or newer with Xcode Command Line Tools, Python 3, and the macOS SDK:
+On macOS with Xcode Command Line Tools, Python 3 and Git, run:
 
 ```sh
 make validate-docs
-make test-unit BUILD_DIR=.build/check
+make test-unit test-packaging BUILD_DIR=.build/check
 make app BUILD_DIR=.build/check DIST_DIR=dist/check
-make validate-app APP_PATH='dist/check/VBAN Receiver.app' EXPECTED_VERSION=0.3.13 EXPECTED_BUILD_NUMBER=17
+make validate-app APP_PATH='dist/check/VBAN Receiver.app'
+make archive DIST_DIR=dist/check
 ```
 
-`ARCH=arm64` is the default; a universal package can use `ARCH="arm64 x86_64"`.
-Unit tests include local UDP/socket tests and mocked audio-policy checks. Live playback and listening checks must be performed separately on a suitable
-test Mac; this public baseline has no automated hardware-runtime target. CI does not claim speaker, network latency, live Windows
-sync, or listening coverage. It does not launch or install the application.
+Local and branch builds default to `BUILD_KIND=development`. The app display name
+includes Dev; About shows DEVELOPMENT, architecture, the short commit and a dirty
+marker when uncommitted changes exist. Numeric `CFBundleShortVersionString` and
+`CFBundleVersion` remain valid macOS version fields. The signed bundle contains
+`Contents/Resources/build-info.json` with the full commit, build kind, version,
+build number, architectures and dirty flag. The archive name resembles
+`VBAN-Receiver-dev-arm64-abcdef123456-macos.zip` (with `-dirty` when applicable).
+A dirty build identifies a development checkout, not a reproducible committed release.
 
-[`validate.yml`](../.github/workflows/validate.yml) checks committed inputs and
-local documentation links, runs `test-unit`, packages an ad-hoc app, and verifies
-its metadata, architectures, minimum OS, resources and signature. It then checks
-ZIP integrity, revalidates the extracted bundle and creates/verifies SHA-256.
-Failures stop artifact publication; Actions records the failed job. Uploaded
-Actions artifacts are test outputs, not a GitHub Release. No deployment, traffic
-switch, automatic release or production rollback occurs in this workflow.
+`ARCH=arm64` is the default; use `ARCH="arm64 x86_64"` for a universal build.
+`make app` may replace an existing identified development bundle. It refuses to
+overwrite a release or an old bundle without build identity; select a fresh
+`DIST_DIR` or `APP_PATH` in that case. It does not install or open the app.
 
-The local link checker checks relative Markdown/image/reference/HTML file paths
-in root documents, `docs`, `Tools`, and `.github`. It intentionally does not
-validate remote websites or heading fragments. Screenshot existence does not
-prove that its UI matches the current application.
+`make archive` validates the existing bundle, checks its recorded commit and dirty
+flag against the current checkout, creates a unique `archive-check.*` directory,
+verifies the ZIP, checks the extracted app and writes/verifies SHA-256. It never
+rebuilds the app or overwrites an earlier archive. Rebuild after committing changes
+before archiving. Always distribute the ZIP and its matching `.sha256` together.
 
-## Prepare a release commit
+## Prepare a release
 
-1. Review all intended source, test, resource, script and documentation changes.
-   Keep machine logs, recordings, temporary builds and private configuration out
-   of the commit. Preserve historical release tags and useful design evidence.
-2. Set `DEFAULT_VERSION` and `DEFAULT_BUILD_NUMBER` in `VERSION.env` to the
-   intended release, then update both READMEs and the [changelog](../CHANGELOG.md).
-   Use an unused version/tag for new development; do not republish the baseline
-   version with different content.
-3. Commit the reviewed files. Run `make validate-release-tree` and the checks
-   above against that commit. This gate rejects required untracked/ignored
-   inputs, working-tree changes and staged but uncommitted release inputs. It
-   never stages files or bypasses missing source files.
-4. Create the matching `vX.Y.Z` tag only after checks pass. Record manual audio
-   results and clearly label the signature status in the release notes.
-5. Archive the verified app and upload its ZIP plus `.sha256` to the intended
-   release. Keep the previous known-good release available for users to revert.
+1. Review and commit the intended source, tests, resources and documentation.
+   Keep private logs, recordings and temporary files out of the commit. Retain
+   historical tags, release assets and design evidence.
+2. Update `VERSION.env` to an unused version and build number, update the
+   changelog and download instructions, and commit the change.
+3. Run the checks above and `make validate-release-tree` on the clean commit.
+   This gate rejects required untracked inputs, unstaged changes and staged but
+   uncommitted inputs. It never stages files itself.
+4. After checks pass, create the corresponding `vX.Y.Z` tag on that exact commit.
+   Record manual audio validation separately from automated checks.
+5. Build and archive with explicit release identity as shown below. Upload only
+   the verified output and checksum to the new release, stating signature status.
 
-`make release-archive RELEASE_TAG=v0.3.13 DIST_DIR=dist/check` validates an existing
-app against the chosen version/build and creates a new `release-check.*` directory
-without overwriting earlier archives. For a new release, use its new version.
-Tag-triggered CI additionally rejects a tag that differs from `VERSION.env`.
-Branch CI checks the prospective tag string; it does not claim that tag exists
-or the artifact has been released. Release-tree validation is separate and must
-pass before any actual release.
-
-## Signature and distribution modes
-
-| Mode | Package | Required check | Release description |
-| --- | --- | --- | --- |
-| Community build | Default `SIGN_IDENTITY=-` | `make validate-app` plus explicit expected version/build | Ad-hoc signed; not Developer ID signed or notarized; macOS may block opening |
-| Developer ID distribution | `SIGN_IDENTITY='Developer ID Application: …' make app` | Notarize, staple, then `make validate-release` with explicit expected version/build | Claim notarization only after the strict gate passes |
-
-Ad-hoc signing provides bundle integrity, not publisher identity or notarization.
-Community builds can be shared with that limitation clearly stated. Do not call
-an ad-hoc build notarized or Apple-approved. The strict gate checks Developer ID,
-Gatekeeper acceptance and a stapled notarization ticket. It does not build or
-change the artifact. CI uses no signing credentials and cannot prove this gate.
-
-For the strict path, submit the signed ZIP using a locally configured notarytool
-keychain profile, staple the accepted app, then validate and archive it:
+For example, after committing 0.3.15 / build 19 in `VERSION.env` and creating
+`v0.3.15` on that commit (example values, not a current release):
 
 ```sh
-xcrun notarytool submit signed-upload.zip --keychain-profile YOUR_PROFILE --wait
-xcrun stapler staple 'dist/check/VBAN Receiver.app'
-make validate-release APP_PATH='dist/check/VBAN Receiver.app' EXPECTED_VERSION=0.3.13 EXPECTED_BUILD_NUMBER=17
-STRICT_RELEASE=1 make release-archive RELEASE_TAG=v0.3.13 DIST_DIR=dist/check
+make app BUILD_KIND=release RELEASE_TAG=v0.3.15 DIST_DIR=dist/release-0.3.15
+make validate-app APP_PATH='dist/release-0.3.15/VBAN Receiver.app' EXPECTED_VERSION=0.3.15 EXPECTED_BUILD_NUMBER=19
+make release-archive BUILD_KIND=release RELEASE_TAG=v0.3.15 DIST_DIR=dist/release-0.3.15
 ```
 
-Replace the example baseline values with the intended new release version/build.
-Store certificates and credentials in Keychain or protected CI secrets, never in
-the repository. Check the checksum after downloading an uploaded asset as the
-final transport check.
+Release mode requires a clean checkout, numeric metadata matching `VERSION.env`,
+and an existing version tag pointing to the packaged commit. A branch build
+cannot borrow the old v0.3.13 tag to claim release identity. Release bundle outputs
+are not replaced. These commands do not upload or publish anything.
+
+## Signing and historical bundles
+
+Build kind and signature status are separate. The default `SIGN_IDENTITY=-` gives
+an ad-hoc signature: bundle integrity, without publisher identity or notarization.
+Community release notes must state this limitation.
+
+For Developer ID distribution, build with your `SIGN_IDENTITY`, submit the signed
+ZIP to `xcrun notarytool` using a configured Keychain profile, staple the accepted
+app, then run `make validate-release` with explicit expected version/build. Use
+`STRICT_RELEASE=1 make release-archive BUILD_KIND=release RELEASE_TAG=...` to
+recheck that gate while archiving. The strict gate requires release provenance,
+Developer ID signing, Gatekeeper acceptance and a stapled ticket. Credentials
+belong in Keychain or protected CI secrets, never the repository.
+
+Historical downloads such as v0.3.13 predate build provenance. Ordinary
+`make validate-app` can still check their metadata, architecture and signature
+integrity, while clearly reporting that build provenance is unavailable. This
+legacy path does not apply to partial or inconsistent new metadata, and cannot
+be used for new archives or strict release validation. Keep old assets unchanged.
+
+## CI and evidence
+
+[`validate.yml`](../.github/workflows/validate.yml) runs the committed-input gate,
+local documentation checks, unit/UI-state tests, packaging regression tests, app
+build, bundle validation and ZIP/SHA-256 roundtrip checks. Branch and pull-request
+artifacts are development builds; tag builds explicitly request release mode.
+The artifact records the checked-out commit (for PRs, GitHub's tested merge commit).
+Actions artifacts are validation outputs, not published Releases.
+
+UI-state tests run offscreen and do not open an audio device. Automated checks do
+not establish audible playback quality, real-world latency or notarization.
+Manual listening checks remain separate. The documentation checker checks local
+file targets, not external URLs or heading fragments.
+
+The [runtime contract](../CONTEXT.md) is required by release-tree validation;
+renaming it must update that gate and its links. Historical measurements should
+record commit, hardware, macOS, toolchain, command, sampling method and limitations.

@@ -1992,7 +1992,9 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 }
 
 - (void)setStateText:(NSString *)state kind:(ReceiverStatusKind)kind {
-    self.statusPill.title = [self statusTitleForKind:kind];
+    self.statusPill.title = [state isEqualToString:@"Starting"]
+        ? [self stateTextForKind:kind fallback:state]
+        : [self statusTitleForKind:kind];
     self.statusPill.dotColor = [self statusColorForKind:kind];
     if (@available(macOS 11.0, *)) {
         self.waveIcon.image = [NSImage imageWithSystemSymbolName:(kind == ReceiverStatusKindReceiving ? @"waveform" : @"waveform.path")
@@ -2646,6 +2648,13 @@ typedef NS_ENUM(NSInteger, CompactButtonGlyph) {
 - (void)showAboutPanel:(id)sender {
     NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
     NSString *build = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"";
+    NSString *buildKind = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"VBANBuildKind"];
+    NSString *buildDisplay = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleGetInfoString"];
+    if (([buildKind isEqualToString:@"development"] || [buildKind isEqualToString:@"release"])
+        && buildDisplay.length) {
+        version = buildDisplay;
+        build = @"";
+    }
     NSString *creditsText = @"Made by XiaoLeXLDW";
     NSAttributedString *credits = [[NSAttributedString alloc] initWithString:creditsText
                                                                   attributes:@{
