@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "artifactKind": "archived-existing-binary",
+  "version": "0.4.1",
+  "buildNumber": "25",
+  "architectures": [
+    "arm64"
+  ],
+  "minimumMacOS": "13.0",
+  "signature": "ad-hoc",
+  "notarized": false,
+  "sourceCommit": null,
+  "sourceStatus": "The original build was made from an uncommitted development tree. A complete matching source snapshot is unavailable. The release tag records this manifest, not buildable app source.",
+  "binarySha256": "7438e33a10b037884b539b190a5a8def773a42e4c63074261a19d7d450f2144d",
+  "archiveName": "VBAN-Receiver-v0.4.1-build25-arm64-macos.zip",
+  "archiveSha256": "3b4512e3351c32ac0f89cc16329b690267a470a186b79d1396cf8be7f887e6ab",
+  "publicationMethod": "Original saved ZIP copied byte-for-byte; app not rebuilt or re-signed. Installed build 25 executable and all bundle files matched the saved archive."
+}
