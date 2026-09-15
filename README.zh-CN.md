@@ -26,6 +26,19 @@
   <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-22c55e">
 </p>
 
+## 下载并安装
+
+需要 **macOS 13 或更高版本、Apple Silicon Mac**。下载使用不需要 Xcode；发布附件不包含 Intel `x86_64` 架构。
+
+1. 打开 [v0.3.13 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13)，下载 `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
+2. 解压后将 `VBAN Receiver.app` 拖入“应用程序”。
+3. 打开 app。该社区附件使用 **ad-hoc 签名，尚未使用 Developer ID 签名或公证**。如果 macOS 阻止打开，请在确认下载来源后，按“系统设置 → 隐私与安全性”中的提示允许该 app 打开。
+4. 按下面的 VoiceMeeter 设置发送音频，再点击“开始接收”。
+
+遇到开发者验证提示时，请参阅 [Apple 官方打开说明](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac)。
+
+**版本范围：**下载入口对应已发布的 v0.3.13。该标签之后的源码改动不包含在此发布附件中。
+
 ![VBAN Receiver 主界面](docs/assets/vban-receiver-app.png)
 
 ## 接收中状态
@@ -43,19 +56,6 @@
 - 可按流名和发送端主机过滤。
 - 支持音量、静音、自动修复和延迟策略。
 - 提供数据、丢包、过滤、错误，以及音频恢复/丢弃事件计数。
-
-## 下载并安装
-
-需要 **macOS 13 或更高版本、Apple Silicon Mac**。下载使用不需要 Xcode；发布附件不包含 Intel `x86_64` 架构。
-
-1. 打开 [v0.3.13 发布页](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13)，下载 `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`，不要选择 GitHub 自动生成的 Source code 压缩包。
-2. 解压后将 `VBAN Receiver.app` 拖入“应用程序”。
-3. 打开 app。该社区附件使用 **ad-hoc 签名，尚未使用 Developer ID 签名或公证**。如果 macOS 阻止打开，请在确认下载来源后，按“系统设置 → 隐私与安全性”中的提示允许该 app 打开。
-4. 按下面的 VoiceMeeter 设置发送音频，再点击“开始接收”。
-
-遇到开发者验证提示时，请参阅 [Apple 官方打开说明](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac)。
-
-**版本范围：**下载入口对应已发布的 v0.3.13。该标签之后的源码改动不包含在此发布附件中。
 
 ## VoiceMeeter 设置
 
@@ -106,7 +106,7 @@ make app
 make validate-app
 ```
 
-在 Finder 中打开 `dist/VBAN Receiver.app`。`make app` 创建本机测试用的 ad-hoc 签名 bundle；`make validate-app` 只检查现有 bundle，不会重建。完整发布流程见 [发布检查清单](docs/releasing.md)。
+在 Finder 中打开 `dist/VBAN Receiver.app`。`make app` 创建 ad-hoc 签名开发包；“关于”窗口和包内的 `build-info.json` 会标明源码提交及是否包含本地改动。`make validate-app` 只检查现有 bundle，不会重建。完整发布流程见 [发布检查清单](docs/releasing.md)。
 
 ## 菜单栏与排障
 

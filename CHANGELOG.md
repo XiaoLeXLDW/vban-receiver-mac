@@ -1,10 +1,9 @@
 # Changelog
 
-Released changes are listed below. Experimental Windows/macOS synchronization,
-observation and calibration work in the development tree is not included in
-v0.3.13. See the [documentation index](docs/README.md) for scope and engineering references.
-
 ## Unreleased
+
+- Show “Starting / 正在启动” in the status pill while the source hostname is being resolved, without changing the existing Waiting labels.
+- Mark development packages with their architecture and source commit, and include build provenance in the app and About dialog.
 
 - Resolve source hostnames in the background with a five-second startup timeout. Stopping or restarting reception discards stale lookup results.
 - Display IPv6 sender endpoints with brackets so the address and port are unambiguous.

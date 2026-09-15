@@ -24,6 +24,19 @@
   <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-22c55e">
 </p>
 
+## Download and Install
+
+You need **macOS 13 or later and an Apple Silicon Mac**. You do not need Xcode to use the download. The release does not include an Intel `x86_64` slice.
+
+1. Open the [v0.3.13 release page](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) and download `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`, rather than GitHub's automatically generated Source code archive.
+2. Extract the ZIP and drag `VBAN Receiver.app` into Applications.
+3. Open the app. This community download is **ad-hoc signed, without Developer ID signing or notarization**. If macOS blocks it, verify the download source before following the app-specific prompts in System Settings → Privacy & Security.
+4. Configure VoiceMeeter below, then click `Start Receiving`.
+
+For developer verification prompts, see [Apple’s instructions for opening an app from an unknown developer](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac).
+
+**Version scope:** the download is the published v0.3.13 release. Source changes after that tag are not included in the release asset.
+
 ![VBAN Receiver main window](docs/assets/vban-receiver-app-en.png)
 
 ## Receiving State
@@ -41,19 +54,6 @@ The screenshot uses a local loopback test stream and a temporary port. For norma
 - Optional filtering by stream name and sender host.
 - Volume, mute, automatic output recovery, and latency controls.
 - Network counters for received data, missing packets, filtered packets, errors, and audio recovery/drop events.
-
-## Download and Install
-
-You need **macOS 13 or later and an Apple Silicon Mac**. You do not need Xcode to use the download. The release does not include an Intel `x86_64` slice.
-
-1. Open the [v0.3.13 release page](https://github.com/XiaoLeXLDW/vban-receiver-mac/releases/tag/v0.3.13) and download `VBAN-Receiver-macOS-Apple-Silicon-arm64-v0.3.13.zip`, rather than GitHub's automatically generated Source code archive.
-2. Extract the ZIP and drag `VBAN Receiver.app` into Applications.
-3. Open the app. This community download is **ad-hoc signed, without Developer ID signing or notarization**. If macOS blocks it, verify the download source before following the app-specific prompts in System Settings → Privacy & Security.
-4. Configure VoiceMeeter below, then click `Start Receiving`.
-
-For developer verification prompts, see [Apple’s instructions for opening an app from an unknown developer](https://support.apple.com/en-ca/guide/mac-help/mh40616/mac).
-
-**Version scope:** the download is the published v0.3.13 release. Source changes after that tag are not included in the release asset.
 
 ## VoiceMeeter Setup
 
@@ -104,7 +104,7 @@ make app
 make validate-app
 ```
 
-Open `dist/VBAN Receiver.app` in Finder. `make app` creates an ad-hoc signed bundle for local testing; `make validate-app` checks the existing bundle without rebuilding it. See the [release checklist](docs/releasing.md) for the full release process.
+Open `dist/VBAN Receiver.app` in Finder. `make app` creates an ad-hoc signed development bundle. Its About dialog and bundled `build-info.json` identify the source commit and whether local changes were included; `make validate-app` checks the existing bundle without rebuilding it. See the [release checklist](docs/releasing.md) for the full release process.
 
 ## Menu Bar and Troubleshooting
 

@@ -4,6 +4,8 @@ BUILD_DIR ?= .build
 DIST_DIR ?= dist
 APP_PATH ?= $(DIST_DIR)/$(APP_NAME).app
 ARCH ?= arm64
+BUILD_KIND ?= development
+RELEASE_TAG ?=
 include VERSION.env
 VERSION ?= $(DEFAULT_VERSION)
 BUILD_NUMBER ?= $(DEFAULT_BUILD_NUMBER)
@@ -35,7 +37,7 @@ build:
 test: test-unit
 
 # Socket and mocked audio-policy tests; no live audio output device required.
-test-unit:
+test-unit: test-status-ui
 	mkdir -p "$(BUILD_DIR)"
 	clang $(CFLAGS) -DVBAN_PACKET_TEST $(PACKET_TEST_SOURCES) $(TEST_FRAMEWORKS) -o "$(BUILD_DIR)/vban_packet_tests"
 	"$(BUILD_DIR)/vban_packet_tests"
@@ -51,7 +53,7 @@ test-unit:
 	"$(BUILD_DIR)/vban_audio_player_policy_tests"
 
 app: build
-	SKIP_BUILD=1 BUILD_DIR="$(abspath $(BUILD_DIR))" BUILD_BIN="$(abspath $(BUILD_DIR))/$(BINARY_NAME)" APP_DIR="$(APP_PATH)" VERSION="$(VERSION)" BUILD_NUMBER="$(BUILD_NUMBER)" ARCH="$(ARCH)" ./Scripts/package-app.sh
+	SKIP_BUILD=1 BUILD_DIR="$(abspath $(BUILD_DIR))" BUILD_BIN="$(abspath $(BUILD_DIR))/$(BINARY_NAME)" APP_DIR="$(APP_PATH)" VERSION="$(VERSION)" BUILD_NUMBER="$(BUILD_NUMBER)" ARCH="$(ARCH)" BUILD_KIND="$(BUILD_KIND)" RELEASE_TAG="$(RELEASE_TAG)" ./Scripts/package-app.sh
 
 perf-idle: app
 	bash ./Scripts/measure-idle-cpu.sh "$(APP_PATH)"
@@ -80,12 +82,26 @@ validate-release-tree:
 clean:
 	rm -rf "$(BUILD_DIR)" "$(DIST_DIR)"
 
-.PHONY: validate-docs release-archive
+.PHONY: validate-docs archive release-archive test-packaging test-status-ui
 validate-docs:
 	python3 Scripts/validate-doc-links.py
 
-# Does not publish. Requires an explicit RELEASE_TAG and matching app metadata.
-release-archive:
-	APP_DIR="$(APP_PATH)" ARCH="$(ARCH)" RELEASE_TAG="$(RELEASE_TAG)" \
+# Does not publish. Development archive names include architecture and commit.
+archive:
+	APP_DIR="$(APP_PATH)" ARCH="$(ARCH)" BUILD_KIND="$(BUILD_KIND)" RELEASE_TAG="$(RELEASE_TAG)" \
 		EXPECTED_VERSION="$(VERSION)" EXPECTED_BUILD_NUMBER="$(BUILD_NUMBER)" \
 		ARCHIVE_DIR="$(DIST_DIR)" bash Scripts/package-release.sh
+
+# A release must be requested explicitly; the tagged commit and VERSION.env must match.
+release-archive:
+	@test "$(BUILD_KIND)" = release || { echo 'Set BUILD_KIND=release and RELEASE_TAG explicitly.' >&2; exit 2; }
+	$(MAKE) archive
+
+test-packaging:
+	PYTHONDONTWRITEBYTECODE=1 python3 -B Tests/test_packaging.py
+
+# The test imports AppDelegate directly and intercepts UI calls without launching the app.
+test-status-ui:
+	mkdir -p "$(BUILD_DIR)"
+	clang $(CFLAGS) Tests/vban_status_ui_tests.m $(filter-out Sources/VBANReceiver/AppDelegate.m Sources/VBANReceiver/main.m,$(SOURCES)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/vban_status_ui_tests"
+	"$(BUILD_DIR)/vban_status_ui_tests"
